@@ -29,11 +29,12 @@ class MusicEngine:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         music_cfg  = config["music"]
-        self.ckpt_variant  = music_cfg.get("checkpoint_variant", "acestep-v15-xl-sft")
-        self.lm_model      = music_cfg.get("lm_model", "acestep-5Hz-lm-1.7B")
-        self.lm_backend    = music_cfg.get("lm_backend", "pt")
+        self.ckpt_variant    = music_cfg.get("checkpoint_variant", "acestep-v15-xl-sft")
+        self.lm_model        = music_cfg.get("lm_model", "acestep-5Hz-lm-1.7B")
+        self.lm_backend      = music_cfg.get("lm_backend", "pt")
         self.inference_steps = int(music_cfg.get("inference_steps", 50))
-        self.ckpt_dir      = Path(music_cfg["checkpoint_dir"]).resolve()
+        self.prefer_source   = music_cfg.get("prefer_source", None)  # "huggingface"|"modelscope"|null
+        self.ckpt_dir        = Path(music_cfg["checkpoint_dir"]).resolve()
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve device: prefer cuda, fall back to mps on Apple Silicon, then cpu
@@ -52,13 +53,16 @@ class MusicEngine:
         from acestep.handler import AceStepHandler
 
         self._dit = AceStepHandler()
-        status, ok = self._dit.initialize_service(
+        init_kwargs = dict(
             project_root="",          # ignored when ACESTEP_CHECKPOINTS_DIR is set
             config_path=self.ckpt_variant,
             device=self.device,
             offload_to_cpu=False,
             offload_dit_to_cpu=False,
         )
+        if self.prefer_source:
+            init_kwargs["prefer_source"] = self.prefer_source
+        status, ok = self._dit.initialize_service(**init_kwargs)
         if not ok:
             raise RuntimeError(f"ACE-Step DiT init failed: {status}")
         logger.info(f"DiT ready: {status}")
@@ -68,10 +72,10 @@ class MusicEngine:
         if not lm_path.exists():
             logger.info(f"Downloading LM '{self.lm_model}' ...")
             from acestep.model_downloader import ensure_lm_model
-            ok_lm, msg_lm = ensure_lm_model(
-                model_name=self.lm_model,
-                checkpoints_dir=self.ckpt_dir,
-            )
+            dl_kwargs = dict(model_name=self.lm_model, checkpoints_dir=self.ckpt_dir)
+            if self.prefer_source:
+                dl_kwargs["prefer_source"] = self.prefer_source
+            ok_lm, msg_lm = ensure_lm_model(**dl_kwargs)
             if not ok_lm:
                 logger.warning(f"LM download failed: {msg_lm} — running in DiT-only mode")
         
