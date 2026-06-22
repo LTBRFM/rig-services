@@ -1,15 +1,22 @@
 """
 Single-threaded background worker that drains the job queue.
 
+Priority rules:
+- TTS jobs always run before Music jobs regardless of submission order.
+- Within the same type, jobs are processed in FIFO submission order.
+- A music job already running is NOT interrupted — priority only applies
+  to jobs waiting in the queue.
+
 Design:
+- PriorityQueue with (priority, sequence, job) tuples.
+  TTS priority=0, Music priority=1.
 - One Python thread processes jobs sequentially (no parallel GPU work).
-- Jobs are stored in a dict keyed by job ID for O(1) status lookups.
-- ModelManager ensures the right model is loaded before each job runs,
-  unloading the previous one only when the model type changes.
-- Clients poll GET /jobs/{id} for status; no websockets required.
+- ModelManager loads/unloads models only when the job type changes.
+- Clients poll GET /jobs/{id} for status; no websockets needed.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import queue
 import threading
@@ -20,21 +27,27 @@ from app.models import Job, JobStatus, JobType
 
 logger = logging.getLogger(__name__)
 
+# ── Priority mapping ──────────────────────────────────────────────────────────
+
+_PRIORITY = {JobType.TTS: 0, JobType.MUSIC: 1}
+
 # ── State (module-level singletons) ──────────────────────────────────────────
 
-_q:    queue.Queue = queue.Queue()          # FIFO job queue
-_jobs: Dict[str, Job] = {}                  # all jobs ever submitted
-_current_job: Optional[Job] = None         # job being processed right now
-_stats = {"processed": 0, "started_at": time.time()}
-_lock  = threading.Lock()                   # protects _jobs / _current_job reads
+_q:       queue.PriorityQueue = queue.PriorityQueue()
+_seq:     itertools.count     = itertools.count()       # tie-breaker within same priority
+_jobs:    Dict[str, Job]      = {}
+_current_job: Optional[Job]   = None
+_stats  = {"processed": 0, "started_at": time.time()}
+_lock   = threading.Lock()
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def submit(job: Job) -> Job:
+    priority = _PRIORITY.get(job.type, 99)
     with _lock:
         _jobs[job.id] = job
-    _q.put(job)
+    _q.put((priority, next(_seq), job))
     return job
 
 
@@ -46,12 +59,14 @@ def status_snapshot() -> Dict[str, Any]:
     """Return a serialisable snapshot of the queue and running job."""
     with _lock:
         current = _current_job
-        pending: List[Job] = list(_q.queue)   # deque peek, no removal
+        # PriorityQueue.queue is a heap of (priority, seq, job) tuples
+        raw = sorted(_q.queue)           # sort by (priority, seq) → true processing order
 
+    pending_jobs = [entry[2] for entry in raw]
     return {
         "current_job":  current.to_dict() if current else None,
-        "queue_length": len(pending),
-        "queue":        [j.to_dict(queue_position=i + 1) for i, j in enumerate(pending)],
+        "queue_length": len(pending_jobs),
+        "queue":        [j.to_dict(queue_position=i + 1) for i, j in enumerate(pending_jobs)],
         "stats": {
             "jobs_processed": _stats["processed"],
             "uptime_s":       round(time.time() - _stats["started_at"]),
@@ -60,13 +75,13 @@ def status_snapshot() -> Dict[str, Any]:
 
 
 def queue_position(job_id: str) -> Optional[int]:
-    """Return 1-based queue position, 0 if processing, None if not found."""
+    """Return 1-based queue position (in priority order), 0 if processing, None if not found."""
     with _lock:
         if _current_job and _current_job.id == job_id:
             return 0
-    pending = list(_q.queue)
-    for i, j in enumerate(pending):
-        if j.id == job_id:
+    raw = sorted(_q.queue)
+    for i, entry in enumerate(raw):
+        if entry[2].id == job_id:
             return i + 1
     return None
 
@@ -76,17 +91,17 @@ def queue_position(job_id: str) -> Optional[int]:
 def _run(model_manager, app_config: Dict[str, Any]) -> None:
     global _current_job
 
-    logger.info("Worker thread started.")
+    logger.info("Worker thread started — TTS has priority over Music.")
 
     while True:
-        job: Job = _q.get()
+        _priority, _seq_n, job = _q.get()  # blocks; unpacks priority tuple
 
         with _lock:
             _current_job = job
 
         job.status     = JobStatus.PROCESSING
         job.started_at = time.time()
-        logger.info(f"Processing job {job.id} ({job.type})")
+        logger.info(f"Processing job {job.id} ({job.type}, priority={_priority})")
 
         try:
             if job.type == JobType.TTS:
