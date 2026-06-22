@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Model weights (large files, download via setup.sh)
+models/
+
+# Generated audio output cache
+output/
+
+# macOS
+.DS_Store

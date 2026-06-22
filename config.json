@@ -1,0 +1,11 @@
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "model_repo": "coqui/XTTS-v2",
+  "model_dir": "models/xtts_v2",
+  "voices_dir": "voices",
+  "output_dir": "output",
+  "default_language": "en",
+  "cache_outputs": true,
+  "max_cached_files": 100
+}
