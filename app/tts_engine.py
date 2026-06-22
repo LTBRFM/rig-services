@@ -158,12 +158,10 @@ class TTSEngine:
             enable_text_splitting=profile["enable_text_splitting"],
         )
 
-        import torchaudio
-        torchaudio.save(
-            str(output_path),
-            torch.tensor(outputs["wav"]).unsqueeze(0),
-            sample_rate=24000,
-        )
+        import numpy as np
+        import soundfile as sf
+        wav_np = np.array(outputs["wav"], dtype=np.float32)
+        sf.write(str(output_path), wav_np, samplerate=24000)
 
         if self.cache_outputs:
             self._evict_old_outputs()

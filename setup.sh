@@ -95,6 +95,65 @@ pip install -r requirements.txt --quiet
 echo "→ Installing ACE-Step 1.5 music generation..."
 pip install "git+https://github.com/ace-step/ACE-Step-1.5.git" --quiet
 
+# ── 6. Patch TTS for transformers 4.46+ / 4.50+ compatibility ─────────────────
+# ACE-Step upgrades transformers, which:
+#   - 4.46+: removes BeamSearchScorer from public namespace
+#   - 4.50+: PreTrainedModel no longer inherits GenerationMixin
+echo "→ Patching TTS for transformers 4.46+/4.50+ compatibility..."
+python - <<'PYEOF'
+import pathlib, TTS
+
+tts_root = pathlib.Path(TTS.__file__).parent
+
+# Patch 1: stream_generator.py — BeamSearchScorer removed from public API in 4.46+
+sg = tts_root / "tts/layers/xtts/stream_generator.py"
+if sg.exists():
+    src = sg.read_text()
+    old = """from transformers import (
+    BeamSearchScorer,
+    ConstrainedBeamSearchScorer,
+    DisjunctiveConstraint,
+    GenerationConfig,
+    GenerationMixin,
+    LogitsProcessorList,
+    PhrasalConstraint,
+    PreTrainedModel,
+    StoppingCriteriaList,
+)"""
+    new = """from transformers.generation.beam_search import BeamSearchScorer, ConstrainedBeamSearchScorer
+from transformers.generation.beam_constraints import DisjunctiveConstraint, PhrasalConstraint
+from transformers import (
+    GenerationConfig,
+    GenerationMixin,
+    LogitsProcessorList,
+    PreTrainedModel,
+    StoppingCriteriaList,
+)"""
+    if old in src:
+        sg.write_text(src.replace(old, new))
+        print(f"  Patched: {sg}")
+    else:
+        print(f"  Already patched: {sg}")
+
+# Patch 2: gpt_inference.py — GenerationMixin not inherited in 4.50+
+gi = tts_root / "tts/layers/xtts/gpt_inference.py"
+if gi.exists():
+    src = gi.read_text()
+    if "from transformers.generation import GenerationMixin" not in src:
+        src = src.replace(
+            "from transformers import GPT2PreTrainedModel",
+            "from transformers import GPT2PreTrainedModel\nfrom transformers.generation import GenerationMixin"
+        ).replace(
+            "class GPT2InferenceModel(GPT2PreTrainedModel):",
+            "class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):"
+        )
+        gi.write_text(src)
+        print(f"  Patched: {gi}")
+    else:
+        print(f"  Already patched: {gi}")
+PYEOF
+
+
 echo ""
 echo "✓ Setup complete."
 echo ""

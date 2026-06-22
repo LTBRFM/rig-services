@@ -12,3 +12,4 @@ output/
 
 # macOS
 .DS_Store
+test_results/
