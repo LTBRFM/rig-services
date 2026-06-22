@@ -91,6 +91,10 @@ fi
 echo "→ Installing TTS and API dependencies..."
 pip install -r requirements.txt --quiet
 
+# ── 5. Install ACE-Step 1.5 ──────────────────────────────────────────────────
+echo "→ Installing ACE-Step 1.5 music generation..."
+pip install "git+https://github.com/ace-step/ACE-Step-1.5.git" --quiet
+
 echo ""
 echo "✓ Setup complete."
 echo ""
@@ -98,3 +102,8 @@ echo "Next steps:"
 echo "  1. Drop voice sample WAV files into voices/"
 echo "  2. Run:  ./start.sh"
 echo "  3. Open: http://localhost:8000/docs"
+echo ""
+echo "Note: First run will download model weights:"
+echo "  - XTTS-v2:                ~2 GB  (TTS)"
+echo "  - ACE-Step XL SFT (DiT): ~19 GB (Music)"
+echo "  - ACE-Step LM 1.7B:       ~3 GB  (Music)"

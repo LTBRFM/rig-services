@@ -55,9 +55,17 @@ class TTSRequest(BaseModel):
 
 
 class MusicRequest(BaseModel):
-    prompt:        str = Field(..., description="Text description of the music to generate")
-    duration:      int = Field(default=30, ge=5, le=300, description="Desired duration in seconds (5–300)")
-    guidance_scale: float = Field(default=3.0, ge=1.0, le=10.0, description="How closely to follow the prompt (1–10)")
+    prompt:         str   = Field(..., description="Text description of the music to generate")
+    lyrics:         str   = Field(default="[Instrumental]",
+                                  description="Song lyrics, or '[Instrumental]' for no vocals")
+    duration:       int   = Field(default=60, ge=10, le=600,
+                                  description="Duration in seconds (10–600)")
+    guidance_scale: float = Field(default=7.0, ge=1.0, le=15.0,
+                                  description="Prompt adherence strength (1–15, default 7)")
+    bpm:            Optional[int] = Field(default=None, ge=30, le=300,
+                                          description="BPM hint (optional, model auto-detects if omitted)")
+    thinking:       bool  = Field(default=True,
+                                  description="Enable LM Chain-of-Thought reasoning for higher quality")
 
     @field_validator("prompt")
     @classmethod

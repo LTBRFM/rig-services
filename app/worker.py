@@ -115,8 +115,11 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
                 engine = model_manager.get_music()
                 result = engine.generate(
                     prompt=job.params["prompt"],
+                    lyrics=job.params.get("lyrics", "[Instrumental]"),
                     duration=job.params["duration"],
                     guidance_scale=job.params["guidance_scale"],
+                    bpm=job.params.get("bpm"),
+                    thinking=job.params.get("thinking", True),
                 )
             else:
                 raise ValueError(f"Unknown job type: {job.type}")

@@ -13,7 +13,9 @@
   },
 
   "music": {
-    "model_repo": "facebook/musicgen-stereo-large",
-    "model_dir":  "models/musicgen_stereo_large"
+    "dit_repo":        "ACE-Step/acestep-v15-xl-sft",
+    "lm_repo":         "ACE-Step/acestep-5Hz-lm-1.7B",
+    "lm_backend":      "pt",
+    "checkpoint_dir":  "models/acestep_checkpoints"
   }
 }

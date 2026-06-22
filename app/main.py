@@ -221,22 +221,35 @@ async def list_languages():
 @app.post("/music", summary="Submit a music generation job", tags=["Music"])
 async def submit_music(request: MusicRequest):
     """
-    Submit a music generation job. Returns immediately with a `job_id`.
+    Submit a music generation job powered by **ACE-Step 1.5 XL SFT**.
+    Returns immediately with a `job_id`.
 
-    Poll `GET /jobs/{job_id}` for progress, download from `GET /result/{job_id}`
-    when done.
+    Poll `GET /jobs/{job_id}` for progress, download from `GET /result/{job_id}` when done.
 
-    **Duration guidance:**
-    - 30 s  → ~1 min GPU time
-    - 120 s → ~5 min GPU time
-    - 300 s → ~12 min GPU time
+    **Duration guidance (24 GB GeForce):**
+    - 30 s   → ~10–30 s GPU time
+    - 60 s   → ~30–90 s GPU time
+    - 180 s  → ~2–5 min GPU time
+    - 600 s  → ~10–15 min GPU time
 
-    **Example:**
+    **Example — instrumental:**
     ```json
     {
-      "prompt": "upbeat synthwave track with driving bass and arpeggiated synths",
+      "prompt": "upbeat synthwave with driving bass and arpeggiated synths",
+      "lyrics": "[Instrumental]",
       "duration": 120,
-      "guidance_scale": 3.5
+      "guidance_scale": 7.0,
+      "thinking": true
+    }
+    ```
+
+    **Example — with lyrics:**
+    ```json
+    {
+      "prompt": "emotional indie pop ballad, acoustic guitar, female vocals",
+      "lyrics": "[verse]\\nWaiting by the window\\nWatching the rain fall\\n[chorus]\\nYou were everything",
+      "duration": 180,
+      "bpm": 90
     }
     ```
     """
@@ -244,8 +257,11 @@ async def submit_music(request: MusicRequest):
         type=JobType.MUSIC,
         params={
             "prompt":         request.prompt,
+            "lyrics":         request.lyrics,
             "duration":       request.duration,
             "guidance_scale": request.guidance_scale,
+            "bpm":            request.bpm,
+            "thinking":       request.thinking,
         },
     )
     worker.submit(job)
