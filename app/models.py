@@ -89,6 +89,9 @@ class Job:
     completed_at: Optional[float] = None
     result_path:  Optional[str]   = None
     error:        Optional[str]   = None
+    # Real-time progress for long-running jobs (0.0–1.0)
+    progress:      float          = 0.0
+    progress_desc: str            = ""
 
     def to_dict(self, queue_position: Optional[int] = None) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -101,6 +104,8 @@ class Job:
             "processing_s":    round(self.completed_at - self.started_at, 2)
                                if self.completed_at and self.started_at else None,
             "result_available": self.result_path is not None,
+            "progress":        round(self.progress * 100, 1) if self.status == JobStatus.PROCESSING else None,
+            "progress_desc":   self.progress_desc or None,
             "error":           self.error,
         }
         if self.type == JobType.TTS:

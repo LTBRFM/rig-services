@@ -167,6 +167,7 @@ class MusicEngine:
         lyrics: str = "[Instrumental]",
         bpm: Optional[int] = None,
         thinking: bool = True,
+        on_progress=None,
     ) -> Path:
         from acestep.inference import GenerationParams, GenerationConfig, generate_music
 
@@ -236,6 +237,7 @@ class MusicEngine:
             params,
             gen_config,
             save_dir=str(self.output_dir),
+            progress=on_progress,
         )
 
         if not result.success:

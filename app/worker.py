@@ -113,6 +113,11 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
             elif job.type == JobType.MUSIC:
                 model_manager.ensure("music")
                 engine = model_manager.get_music()
+
+                def _music_progress(value: float, desc: str = "") -> None:
+                    job.progress = float(value)
+                    job.progress_desc = str(desc)
+
                 result = engine.generate(
                     prompt=job.params["prompt"],
                     lyrics=job.params.get("lyrics", "[Instrumental]"),
@@ -120,6 +125,7 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
                     guidance_scale=job.params["guidance_scale"],
                     bpm=job.params.get("bpm"),
                     thinking=job.params.get("thinking", True),
+                    on_progress=_music_progress,
                 )
             else:
                 raise ValueError(f"Unknown job type: {job.type}")
