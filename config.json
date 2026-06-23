@@ -11,12 +11,17 @@
     "model_dir": "models/xtts_v2"
   },
   "music": {
-    "checkpoint_variant": "acestep-v15-turbo",
+    "_note": "xl-sft = 4B DiT, ~14 GB VRAM on 24 GB GeForce — radio quality. Switch to acestep-v15-turbo for fast preview (8 steps, ~7 GB).",
+    "checkpoint_variant": "acestep-v15-xl-sft",
     "lm_model": "acestep-5Hz-lm-1.7B",
     "lm_backend": "pt",
-    "inference_steps": 8,
-    "_shift_note": "Diffusion timestep shift — 3.0 is correct for ALL ACE-Step v1.5 variants (turbo/sft/xl-sft). Do not use the GenerationParams default of 1.0.",
+    "inference_steps": 50,
     "shift": 3.0,
+    "_dcw_note": "DCW is auto-set per model: turbo=true, sft/xl-sft=false. Override here if needed.",
+    "fade_in_duration": 0.5,
+    "fade_out_duration": 3.0,
+    "lm_cfg_scale": 3.0,
+    "normalization_db": -1.0,
     "checkpoint_dir": "models/acestep_checkpoints",
     "_prefer_source_note": "Set to 'modelscope' if HuggingFace is slow, 'huggingface' to force HF, null for auto-detect",
     "prefer_source": null
