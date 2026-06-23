@@ -37,11 +37,10 @@ class MusicEngine:
         self.ckpt_dir        = Path(music_cfg["checkpoint_dir"]).resolve()
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve device: prefer cuda, fall back to mps on Apple Silicon, then cpu
+        # Resolve device: prefer cuda, fall back to cpu (skip MPS — ACE-Step DiT
+        # fails silently on MPS, producing near-silence output)
         if torch.cuda.is_available():
             self.device = "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            self.device = "mps"
         else:
             self.device = "cpu"
 
@@ -53,18 +52,30 @@ class MusicEngine:
         from acestep.handler import AceStepHandler
 
         self._dit = AceStepHandler()
+        # Disable MLX on MPS — MLX VAE decoder produces bass-only output (no harmonics)
+        # on Apple Silicon; forcing PyTorch gives correct full-spectrum audio.
+        use_mlx = self.device == "cuda"
         init_kwargs = dict(
             project_root="",          # ignored when ACESTEP_CHECKPOINTS_DIR is set
             config_path=self.ckpt_variant,
             device=self.device,
             offload_to_cpu=False,
             offload_dit_to_cpu=False,
+            use_mlx_dit=use_mlx,
         )
         if self.prefer_source:
             init_kwargs["prefer_source"] = self.prefer_source
         status, ok = self._dit.initialize_service(**init_kwargs)
         if not ok:
             raise RuntimeError(f"ACE-Step DiT init failed: {status}")
+
+        # MLX VAE always activates on MPS/CPU but produces bass-only audio (no harmonics).
+        # Force PyTorch VAE decode path instead.
+        if self.device in ("mps", "cpu"):
+            self._dit.use_mlx_vae = False
+            self._dit.mlx_vae = None
+            logger.info("MLX VAE disabled — using PyTorch VAE for correct harmonic output.")
+
         logger.info(f"DiT ready: {status}")
 
         # ── Ensure LM weights are downloaded ──────────────────────────────────
