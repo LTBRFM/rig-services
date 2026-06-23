@@ -56,13 +56,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Unified GPU API",
     description=(
-        "Single-GPU API for Text-to-Speech (XTTS-v2) and Music Generation (MusicGen).\n\n"
-        "Jobs are queued and processed sequentially. The active model stays loaded on GPU "
-        "until a different model type is requested, then it is swapped automatically.\n\n"
-        "**Workflow:** submit a job → receive `job_id` → poll `GET /jobs/{job_id}` until "
-        "`status == done` → download result from `GET /result/{job_id}`."
+        "Single-GPU API for **Text-to-Speech** (XTTS-v2) and **Music Generation** (ACE-Step 1.5 XL SFT).\n\n"
+        "Jobs are queued and processed sequentially — TTS always has priority over Music. "
+        "The active model stays loaded on GPU until a different type is requested.\n\n"
+        "## Workflow\n"
+        "1. `POST /tts` or `POST /music` → receive `job_id`\n"
+        "2. Poll `GET /jobs/{job_id}` until `status == done` (music jobs include `progress` 0–100)\n"
+        "3. Download `GET /result/{job_id}` (mastered) or `GET /result/{job_id}?raw=true` (pre-mastering)\n\n"
+        "## Global Preset\n"
+        "Configure a single style via `PATCH /preset` — then `POST /music` only needs `lyrics`.\n"
+        "Ideal for scheduled generation (e.g. service-update songs every 30 minutes).\n\n"
+        "## Mastering\n"
+        "Every music job automatically runs a post-processing chain:\n"
+        "1. **Pedalboard** — highpass → compression → high-shelf EQ → limiter\n"
+        "2. **Matchering** *(optional)* — tonal matching to an uploaded reference track\n"
+        "3. **LUFS normalisation** — final loudness + true-peak ceiling\n\n"
+        "Upload a reference track via `POST /preset/reference` and enable via `PATCH /preset`."
     ),
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -110,9 +121,11 @@ async def get_job(job_id: str):
     Poll this endpoint after submitting a job.
 
     - `status: pending`    — waiting in queue
-    - `status: processing` — running on GPU right now
-    - `status: done`       — finished; download result from `GET /result/{job_id}`
+    - `status: processing` — running on GPU right now; music jobs include `progress` (0–100) and `progress_desc`
+    - `status: done`       — finished; download from `GET /result/{job_id}`
     - `status: failed`     — see `error` field for details
+
+    Music jobs also expose `raw_available: true` once the raw pre-mastering file is ready.
     """
     job = worker.get_job(job_id)
     if not job:
