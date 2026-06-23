@@ -6,19 +6,17 @@
   "default_language": "en",
   "cache_outputs": true,
   "max_cached_files": 100,
-
   "tts": {
     "model_repo": "coqui/XTTS-v2",
-    "model_dir":  "models/xtts_v2"
+    "model_dir": "models/xtts_v2"
   },
-
   "music": {
-    "checkpoint_variant": "acestep-v15-xl-sft",
-    "lm_model":           "acestep-5Hz-lm-1.7B",
-    "lm_backend":         "pt",
-    "inference_steps":    50,
-    "checkpoint_dir":     "models/acestep_checkpoints",
+    "checkpoint_variant": "acestep-v15-turbo",
+    "lm_model": "acestep-5Hz-lm-1.7B",
+    "lm_backend": "pt",
+    "inference_steps": 8,
+    "checkpoint_dir": "models/acestep_checkpoints",
     "_prefer_source_note": "Set to 'modelscope' if HuggingFace is slow, 'huggingface' to force HF, null for auto-detect",
-    "prefer_source":      null
+    "prefer_source": null
   }
 }

@@ -142,14 +142,18 @@ def run_tests(skip_music=False):
         print("  ℹ️  Priority queue ordering (TTS < Music) is enforced in worker.py")
         print("     and is tested on a system with GPU + models available (--no-skip-music).")
     else:
-        print("  Submitting music job then TTS job 0.5s later — TTS must appear first in queue.")
-        m_job = _req("POST", "/music", {
-            "prompt": "priority queue test placeholder",
+        print("  Submitting 2 music jobs then 1 TTS job — TTS must jump ahead of 2nd music in queue.")
+        m1_job = _req("POST", "/music", {
+            "prompt": "priority queue test music one",
+            "duration": 10, "guidance_scale": 7.0, "thinking": False
+        })
+        m2_job = _req("POST", "/music", {
+            "prompt": "priority queue test music two",
             "duration": 10, "guidance_scale": 7.0, "thinking": False
         })
         time.sleep(0.5)
         t_job = _req("POST", "/tts", {
-            "text": "Priority queue test. TTS submitted after music but must run first.",
+            "text": "Priority queue test. TTS submitted after music but must run before second music.",
             "voice": "en_female", "language": "en"
         })
         time.sleep(1)
@@ -157,26 +161,30 @@ def run_tests(skip_music=False):
         status = _req("GET", "/status")
         current = status.get("current_job")
         queue   = status.get("queue", [])
-        m_id, t_id = m_job.get("job_id"), t_job.get("job_id")
+        m1_id, m2_id, t_id = m1_job.get("job_id"), m2_job.get("job_id"), t_job.get("job_id")
 
-        if current and current.get("id") == m_id:
-            tts_in_queue = next((q for q in queue if q["id"] == t_id), None)
-            ok("TTS at position 1 in queue while music processes",
-               tts_in_queue and tts_in_queue.get("queue_position") == 1,
-               f"queue={[(q['type'],q['queue_position']) for q in queue]}")
+        # Music1 should be running; TTS should be ahead of Music2 in the waiting queue
+        tts_q = next((q for q in queue if q["id"] == t_id),  None)
+        m2_q  = next((q for q in queue if q["id"] == m2_id), None)
+        if tts_q and m2_q:
+            ok("TTS queued ahead of 2nd music job (priority enforced)",
+               tts_q["queue_position"] < m2_q["queue_position"],
+               f"TTS pos={tts_q['queue_position']} Music2 pos={m2_q['queue_position']}")
+        elif current and current.get("id") == t_id:
+            ok("TTS queued ahead of 2nd music job (priority enforced)",
+               True, "TTS already running — jumped the queue")
         else:
-            tts_q = next((q for q in queue if q["id"] == t_id), None)
-            mus_q = next((q for q in queue if q["id"] == m_id), None)
-            if tts_q and mus_q:
-                ok("TTS position < Music position in queue",
-                   tts_q["queue_position"] < mus_q["queue_position"],
-                   f"TTS={tts_q['queue_position']} Music={mus_q['queue_position']}")
-            else:
-                ok("Both jobs submitted", m_id is not None and t_id is not None)
+            ok("TTS and music jobs submitted", t_id and m1_id and m2_id)
 
-        t_result = poll_job(t_id, timeout=300)
-        ok("TTS job completes ahead of music", t_result["status"] == "done",
-           t_result.get("error","timeout"))
+        # TTS must complete — it runs before Music2 even though submitted after both
+        t_result  = poll_job(t_id,  timeout=600)
+        m2_result = poll_job(m2_id, timeout=600)
+        ok("TTS priority job completes successfully", t_result["status"] == "done",
+           t_result.get("error", "timeout"))
+        if t_result["status"] == "done" and m2_result.get("completed_at") and t_result.get("completed_at"):
+            ok("TTS completes before 2nd music job (priority honoured)",
+               t_result["completed_at"] <= m2_result["completed_at"],
+               f"TTS={t_result.get('completed_at'):.1f} Music2={m2_result.get('completed_at'):.1f}")
 
     # ── Music generation (requires GPU + models downloaded) ──────────────────
     if not skip_music:
