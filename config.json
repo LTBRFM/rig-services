@@ -15,6 +15,8 @@
     "lm_model": "acestep-5Hz-lm-1.7B",
     "lm_backend": "pt",
     "inference_steps": 8,
+    "_shift_note": "Diffusion timestep shift — 3.0 is correct for ALL ACE-Step v1.5 variants (turbo/sft/xl-sft). Do not use the GenerationParams default of 1.0.",
+    "shift": 3.0,
     "checkpoint_dir": "models/acestep_checkpoints",
     "_prefer_source_note": "Set to 'modelscope' if HuggingFace is slow, 'huggingface' to force HF, null for auto-detect",
     "prefer_source": null

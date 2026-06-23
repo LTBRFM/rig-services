@@ -37,6 +37,11 @@ class MusicEngine:
         self.ckpt_dir        = Path(music_cfg["checkpoint_dir"]).resolve()
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+        # shift=3.0 is the correct value for ALL ACE-Step v1.5 variants.
+        # The GenerationParams default (1.0) is wrong for this model family —
+        # the Gradio demo always sets shift=3.0 regardless of turbo/sft/base.
+        self.shift = float(music_cfg.get("shift", 3.0))
+
         # Resolve device: prefer cuda, fall back to cpu (skip MPS — ACE-Step DiT
         # fails silently on MPS, producing near-silence output)
         if torch.cuda.is_available():
@@ -150,7 +155,7 @@ class MusicEngine:
 
         is_instrumental = lyrics.strip().upper() in ("[INSTRUMENTAL]", "")
         cache_key = hashlib.sha256(
-            f"{prompt}|{duration}|{guidance_scale}|{lyrics}|{bpm}|{thinking}|{self.ckpt_variant}".encode()
+            f"{prompt}|{duration}|{guidance_scale}|{lyrics}|{bpm}|{thinking}|{self.ckpt_variant}|{self.shift}".encode()
         ).hexdigest()[:16]
         output_path = self.output_dir / f"{cache_key}.wav"
 
@@ -160,9 +165,16 @@ class MusicEngine:
 
         logger.info(
             f"ACE-Step generating: variant={self.ckpt_variant}, duration={duration}s, "
-            f"steps={self.inference_steps}, guidance={guidance_scale}, "
-            f"thinking={thinking}, prompt={prompt[:60]!r}"
+            f"steps={self.inference_steps}, shift={self.shift}, guidance={guidance_scale}, "
+            f"thinking={thinking}, dcw_scaler={dcw_scaler}/{dcw_high_scaler}, "
+            f"prompt={prompt[:60]!r}"
         )
+
+        # DCW scalers differ by thinking mode (from Gradio demo source)
+        if thinking:
+            dcw_scaler, dcw_high_scaler = 0.02, 0.06
+        else:
+            dcw_scaler, dcw_high_scaler = 0.05, 0.02
 
         params = GenerationParams(
             task_type="text2music",
@@ -176,6 +188,17 @@ class MusicEngine:
             seed=-1,
             inference_steps=self.inference_steps,
             enable_normalization=True,
+            # shift=3.0 is the correct value for ACE-Step v1.5 (all variants).
+            # GenerationParams defaults to 1.0 which is wrong — the Gradio demo
+            # always passes 3.0 regardless of model type.
+            shift=self.shift,
+            # DCW (Discrete Cosine Wavelet) denoising correction — enabled for turbo,
+            # scalers are thinking-mode-dependent per the official demo.
+            dcw_enabled=True,
+            dcw_mode="double",
+            dcw_wavelet="haar",
+            dcw_scaler=dcw_scaler,
+            dcw_high_scaler=dcw_high_scaler,
         )
 
         gen_config = GenerationConfig(
@@ -205,98 +228,3 @@ class MusicEngine:
 
         return output_path
 
-
-    def unload(self) -> None:
-        """Free all GPU memory held by DiT and LM handlers."""
-        if self._llm is not None:
-            try:
-                self._llm.unload()
-            except Exception:
-                pass
-            self._llm = None
-
-        if self._dit is not None:
-            for attr in ("model", "vae", "text_encoder", "text_tokenizer", "silence_latent"):
-                obj = getattr(self._dit, attr, None)
-                if obj is not None and hasattr(obj, "cpu"):
-                    try:
-                        obj.cpu()
-                    except Exception:
-                        pass
-                setattr(self._dit, attr, None)
-            self._dit = None
-
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        logger.info("ACE-Step unloaded.")
-
-    # ── Generation ────────────────────────────────────────────────────────────
-
-    def generate(
-        self,
-        prompt: str,
-        duration: int,
-        guidance_scale: float,
-        lyrics: str = "[Instrumental]",
-        bpm: int | None = None,
-        thinking: bool = True,
-    ) -> Path:
-        from acestep.inference import GenerationParams, GenerationConfig, generate_music
-
-        cache_key = hashlib.sha256(
-            f"{prompt}|{duration}|{guidance_scale}|{lyrics}|{bpm}|{thinking}".encode()
-        ).hexdigest()[:16]
-        output_path = self.output_dir / f"{cache_key}.wav"
-
-        if output_path.exists():
-            logger.info(f"Music cache hit: {prompt[:50]!r}")
-            return output_path
-
-        logger.info(
-            f"ACE-Step generating: duration={duration}s, guidance={guidance_scale}, "
-            f"thinking={thinking}, prompt={prompt[:60]!r}"
-        )
-
-        params = GenerationParams(
-            task_type="text2music",
-            caption=prompt,
-            lyrics=lyrics,
-            instrumental=(lyrics.strip() == "[Instrumental]"),
-            duration=float(duration),
-            guidance_scale=float(guidance_scale),
-            thinking=thinking,
-            bpm=bpm,
-            seed=-1,
-            inference_steps=50,   # SFT model recommended steps
-            enable_normalization=True,
-        )
-
-        gen_config = GenerationConfig(
-            batch_size=1,
-            audio_format="wav",
-            use_random_seed=True,
-        )
-
-        result = generate_music(
-            self._dit,
-            self._llm,
-            params,
-            gen_config,
-            save_dir=str(self.output_dir),
-        )
-
-        if not result.success:
-            raise RuntimeError(f"ACE-Step generation failed: {result.error}")
-
-        if not result.audios:
-            raise RuntimeError("ACE-Step returned no audio output")
-
-        generated_path = Path(result.audios[0]["path"])
-
-        # Rename to stable cache-key filename
-        generated_path.rename(output_path)
-        logger.info(f"Music saved → {output_path}")
-
-        return output_path
