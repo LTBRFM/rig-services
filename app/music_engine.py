@@ -163,18 +163,18 @@ class MusicEngine:
             logger.info(f"Music cache hit: {prompt[:50]!r}")
             return output_path
 
+        # DCW scalers differ by thinking mode (from Gradio demo source)
+        if thinking:
+            dcw_scaler, dcw_high_scaler = 0.02, 0.06
+        else:
+            dcw_scaler, dcw_high_scaler = 0.05, 0.02
+
         logger.info(
             f"ACE-Step generating: variant={self.ckpt_variant}, duration={duration}s, "
             f"steps={self.inference_steps}, shift={self.shift}, guidance={guidance_scale}, "
             f"thinking={thinking}, dcw_scaler={dcw_scaler}/{dcw_high_scaler}, "
             f"prompt={prompt[:60]!r}"
         )
-
-        # DCW scalers differ by thinking mode (from Gradio demo source)
-        if thinking:
-            dcw_scaler, dcw_high_scaler = 0.02, 0.06
-        else:
-            dcw_scaler, dcw_high_scaler = 0.05, 0.02
 
         params = GenerationParams(
             task_type="text2music",
