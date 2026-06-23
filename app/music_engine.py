@@ -162,7 +162,7 @@ class MusicEngine:
     def generate(
         self,
         prompt: str,
-        duration: int,
+        duration: Optional[int],
         guidance_scale: float,
         lyrics: str = "[Instrumental]",
         bpm: Optional[int] = None,
@@ -189,7 +189,7 @@ class MusicEngine:
             dcw_scaler, dcw_high_scaler = 0.05, 0.02  # values unused when dcw_enabled=False
 
         logger.info(
-            f"ACE-Step generating: variant={self.ckpt_variant}, duration={duration}s, "
+            f"ACE-Step generating: variant={self.ckpt_variant}, duration={'auto' if duration is None else f'{duration}s'}, "
             f"steps={self.inference_steps}, shift={self.shift}, guidance={guidance_scale}, "
             f"thinking={thinking}, dcw={'on' if self.dcw_enabled else 'off'}, "
             f"fade={self.fade_in}/{self.fade_out}s, lm_cfg={self.lm_cfg_scale}, "
@@ -201,7 +201,7 @@ class MusicEngine:
             caption=prompt,
             lyrics=lyrics,
             instrumental=is_instrumental,
-            duration=float(duration),
+            duration=float(duration) if duration is not None else None,
             guidance_scale=float(guidance_scale),
             thinking=thinking,
             bpm=bpm,

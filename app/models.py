@@ -58,8 +58,8 @@ class MusicRequest(BaseModel):
     prompt:         str   = Field(..., description="Text description of the music to generate")
     lyrics:         str   = Field(default="[Instrumental]",
                                   description="Song lyrics, or '[Instrumental]' for no vocals")
-    duration:       int   = Field(default=60, ge=10, le=600,
-                                  description="Duration in seconds (10–600)")
+    duration:       Optional[int] = Field(default=None, ge=10, le=600,
+                                         description="Duration in seconds (10–600). Omit to let the model auto-determine length from lyrics.")
     guidance_scale: float = Field(default=7.0, ge=1.0, le=15.0,
                                   description="Prompt adherence strength (1–15, default 7)")
     bpm:            Optional[int] = Field(default=None, ge=30, le=300,
