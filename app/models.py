@@ -55,24 +55,17 @@ class TTSRequest(BaseModel):
 
 
 class MusicRequest(BaseModel):
-    prompt:         str   = Field(..., description="Text description of the music to generate")
+    prompt:         Optional[str] = Field(default=None, description="Music style/description — falls back to global preset if omitted")
     lyrics:         str   = Field(default="[Instrumental]",
                                   description="Song lyrics, or '[Instrumental]' for no vocals")
     duration:       Optional[int] = Field(default=None, ge=10, le=600,
                                          description="Duration in seconds (10–600). Omit to let the model auto-determine length from lyrics.")
-    guidance_scale: float = Field(default=7.0, ge=1.0, le=15.0,
-                                  description="Prompt adherence strength (1–15, default 7)")
+    guidance_scale: Optional[float] = Field(default=None, ge=1.0, le=15.0,
+                                            description="Prompt adherence strength (1–15) — falls back to preset")
     bpm:            Optional[int] = Field(default=None, ge=30, le=300,
                                           description="BPM hint (optional, model auto-detects if omitted)")
-    thinking:       bool  = Field(default=True,
-                                  description="Enable LM Chain-of-Thought reasoning for higher quality")
-
-    @field_validator("prompt")
-    @classmethod
-    def prompt_not_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("prompt must not be empty")
-        return v.strip()
+    thinking:       Optional[bool] = Field(default=None,
+                                           description="Enable LM Chain-of-Thought reasoning — falls back to preset")
 
 
 # ── Job ───────────────────────────────────────────────────────────────────────
@@ -88,6 +81,7 @@ class Job:
     started_at:   Optional[float] = None
     completed_at: Optional[float] = None
     result_path:  Optional[str]   = None
+    raw_path:     Optional[str]   = None
     error:        Optional[str]   = None
     # Real-time progress for long-running jobs (0.0–1.0)
     progress:      float          = 0.0
@@ -104,6 +98,7 @@ class Job:
             "processing_s":    round(self.completed_at - self.started_at, 2)
                                if self.completed_at and self.started_at else None,
             "result_available": self.result_path is not None,
+            "raw_available":    self.raw_path is not None,
             "progress":        round(self.progress * 100, 1) if self.status == JobStatus.PROCESSING else None,
             "progress_desc":   self.progress_desc or None,
             "error":           self.error,

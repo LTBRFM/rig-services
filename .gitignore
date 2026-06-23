@@ -20,3 +20,9 @@ server.pid
 lift_me_higher.wav
 *.log
 *.pid
+
+# Mastering
+data/reference.wav
+
+# Preset (user-specific, not committed)
+# preset.json is intentionally NOT gitignored — commit your preset for reproducibility

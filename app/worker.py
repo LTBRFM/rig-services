@@ -21,6 +21,7 @@ import logging
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.models import Job, JobStatus, JobType
@@ -88,7 +89,7 @@ def queue_position(job_id: str) -> Optional[int]:
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
-def _run(model_manager, app_config: Dict[str, Any]) -> None:
+def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None:
     global _current_job
 
     logger.info("Worker thread started — TTS has priority over Music.")
@@ -118,7 +119,7 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
                     job.progress = float(value)
                     job.progress_desc = str(desc)
 
-                result = engine.generate(
+                raw_result = engine.generate(
                     prompt=job.params["prompt"],
                     lyrics=job.params.get("lyrics", "[Instrumental]"),
                     duration=job.params["duration"],
@@ -127,6 +128,21 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
                     thinking=job.params.get("thinking", True),
                     on_progress=_music_progress,
                 )
+                raw_path = Path(raw_result)
+                job.raw_path = str(raw_path)
+
+                # Mastering post-processing
+                if preset_manager is not None:
+                    from app.mastering import apply_mastering
+                    mastering_cfg = preset_manager.mastering_settings()
+                    ref_path = Path("data/reference.wav")
+                    mastered_path = raw_path.parent / (raw_path.stem + "_mastered.wav")
+                    job.progress = 0.99
+                    job.progress_desc = "Mastering audio..."
+                    apply_mastering(raw_path, mastered_path, mastering_cfg, ref_path)
+                    result = mastered_path
+                else:
+                    result = raw_path
             else:
                 raise ValueError(f"Unknown job type: {job.type}")
 
@@ -149,10 +165,10 @@ def _run(model_manager, app_config: Dict[str, Any]) -> None:
             _q.task_done()
 
 
-def start(model_manager, app_config: Dict[str, Any]) -> threading.Thread:
+def start(model_manager, app_config: Dict[str, Any], preset_manager=None) -> threading.Thread:
     t = threading.Thread(
         target=_run,
-        args=(model_manager, app_config),
+        args=(model_manager, app_config, preset_manager),
         daemon=True,
         name="gpu-worker",
     )

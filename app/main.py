@@ -9,7 +9,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -19,6 +19,7 @@ from app.models import (
     MusicRequest, TTSRequest,
     SUPPORTED_LANGUAGES,
 )
+from app.preset import PresetManager
 import app.worker as worker
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -31,18 +32,23 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CONFIG_PATH = "config.json"
+PRESET_PATH = Path("preset.json")
+REFERENCE_PATH = Path("data/reference.wav")
+
 with open(CONFIG_PATH) as _f:
     _config = json.load(_f)
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
-model_manager: ModelManager = None
+model_manager:  ModelManager  = None
+preset_manager: PresetManager = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model_manager
-    model_manager = ModelManager(_config)
-    worker.start(model_manager, _config)
+    global model_manager, preset_manager
+    model_manager  = ModelManager(_config)
+    preset_manager = PresetManager(PRESET_PATH)
+    worker.start(model_manager, _config, preset_manager)
     logger.info("GPU worker started. API ready.")
     yield
 
@@ -125,23 +131,36 @@ async def get_job(job_id: str):
         404: {"description": "Job not found or not yet complete"},
     },
 )
-async def get_result(job_id: str):
-    """Download the WAV file produced by a completed job."""
+async def get_result(job_id: str, raw: bool = False):
+    """
+    Download the WAV file produced by a completed job.
+
+    - `?raw=true` — download the pre-mastering original (always available for music jobs)
+    - default      — download the mastered version
+    """
     job = worker.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
-    if not job.result_path:
+
+    if raw:
+        target = job.raw_path or job.result_path
+        suffix = "raw"
+    else:
+        target = job.result_path
+        suffix = "mastered"
+
+    if not target:
         raise HTTPException(
             status_code=404,
             detail=f"Result not available (status: {job.status})",
         )
-    path = Path(job.result_path)
+    path = Path(target)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Result file missing from disk")
     return FileResponse(
         path=str(path),
         media_type="audio/wav",
-        filename=f"{job.type}_{job_id}.wav",
+        filename=f"{job.type}_{job_id}_{suffix}.wav",
     )
 
 
@@ -215,6 +234,79 @@ async def list_languages():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Preset
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/preset", summary="Get global music preset", tags=["Preset"])
+async def get_preset():
+    """
+    Returns the current global music preset.  All fields except `lyrics` in
+    `POST /music` fall back to this preset when not provided in the request.
+    """
+    p = preset_manager.get()
+    p["reference_uploaded"] = REFERENCE_PATH.exists()
+    return p
+
+
+@app.patch("/preset", summary="Update global music preset", tags=["Preset"])
+async def patch_preset(updates: dict):
+    """
+    Deep-merge *updates* into the current preset and persist to `preset.json`.
+
+    Only send the fields you want to change — everything else is preserved.
+
+    **Examples:**
+
+    Change prompt only:
+    ```json
+    { "prompt": "dark cinematic orchestral, strings, brass, timpani" }
+    ```
+
+    Tweak mastering:
+    ```json
+    { "mastering": { "target_lufs": -9.0, "matchering_enabled": true } }
+    ```
+
+    Enable matchering (upload a reference track first via POST /preset/reference):
+    ```json
+    { "mastering": { "matchering_enabled": true } }
+    ```
+    """
+    result = preset_manager.patch(updates)
+    result["reference_uploaded"] = REFERENCE_PATH.exists()
+    return result
+
+
+@app.post("/preset/reference", summary="Upload mastering reference track", tags=["Preset"])
+async def upload_reference(file: UploadFile = File(...)):
+    """
+    Upload a WAV reference track for matchering-based mastering.
+
+    The file should be a professionally mastered song in the same genre as
+    your generated music.  Once uploaded, set `mastering.matchering_enabled`
+    to `true` via `PATCH /preset` to activate reference-based mastering.
+
+    Accepts WAV files only.
+    """
+    if not file.filename.lower().endswith((".wav", ".flac")):
+        raise HTTPException(status_code=422, detail="Only WAV or FLAC reference files are accepted")
+    REFERENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    REFERENCE_PATH.write_bytes(content)
+    logger.info(f"Reference track uploaded: {file.filename} ({len(content) // 1024} KB)")
+    return {"status": "ok", "reference": str(REFERENCE_PATH), "size_kb": len(content) // 1024}
+
+
+@app.delete("/preset/reference", summary="Remove mastering reference track", tags=["Preset"])
+async def delete_reference():
+    """Remove the uploaded reference track. Mastering will fall back to the pedalboard DSP chain."""
+    if REFERENCE_PATH.exists():
+        REFERENCE_PATH.unlink()
+        return {"status": "ok", "message": "Reference track removed"}
+    return {"status": "ok", "message": "No reference track was present"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Music
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -224,44 +316,51 @@ async def submit_music(request: MusicRequest):
     Submit a music generation job powered by **ACE-Step 1.5 XL SFT**.
     Returns immediately with a `job_id`.
 
-    Poll `GET /jobs/{job_id}` for progress, download from `GET /result/{job_id}` when done.
+    **Only `lyrics` is required** when a global preset is configured via
+    `PATCH /preset`.  Any field you include in the request overrides the preset
+    for that one job.
 
-    **Duration guidance (24 GB GeForce):**
-    - 30 s   → ~10–30 s GPU time
-    - 60 s   → ~30–90 s GPU time
-    - 180 s  → ~2–5 min GPU time
-    - 600 s  → ~10–15 min GPU time
+    Poll `GET /jobs/{job_id}` for progress (includes `progress` 0–100 and
+    `progress_desc`).  Download from `GET /result/{job_id}` when done.
 
-    **Example — instrumental:**
+    - `GET /result/{job_id}`            → mastered WAV (default)
+    - `GET /result/{job_id}?raw=true`   → pre-mastering original
+
+    **Example — lyrics only (uses preset for everything else):**
+    ```json
+    { "lyrics": "[Verse 1]\\nHello world\\n[Chorus]\\nLa la la" }
+    ```
+
+    **Example — full override:**
     ```json
     {
-      "prompt": "upbeat synthwave with driving bass and arpeggiated synths",
+      "prompt": "upbeat synthwave with driving bass",
       "lyrics": "[Instrumental]",
       "duration": 120,
       "guidance_scale": 7.0,
       "thinking": true
     }
     ```
-
-    **Example — with lyrics:**
-    ```json
-    {
-      "prompt": "emotional indie pop ballad, acoustic guitar, female vocals",
-      "lyrics": "[verse]\\nWaiting by the window\\nWatching the rain fall\\n[chorus]\\nYou were everything",
-      "duration": 180,
-      "bpm": 90
-    }
-    ```
     """
+    preset = preset_manager.get()
+
+    # Merge: request fields override preset; None means "use preset"
+    prompt = request.prompt or preset.get("prompt") or ""
+    if not prompt.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="prompt is required — either set it in the request or configure a global preset via PATCH /preset",
+        )
+
     job = Job(
         type=JobType.MUSIC,
         params={
-            "prompt":         request.prompt,
+            "prompt":         prompt.strip(),
             "lyrics":         request.lyrics,
-            "duration":       request.duration,
-            "guidance_scale": request.guidance_scale,
-            "bpm":            request.bpm,
-            "thinking":       request.thinking,
+            "duration":       request.duration if request.duration is not None else preset.get("duration"),
+            "guidance_scale": request.guidance_scale if request.guidance_scale is not None else preset.get("guidance_scale", 7.0),
+            "bpm":            request.bpm if request.bpm is not None else preset.get("bpm"),
+            "thinking":       request.thinking if request.thinking is not None else preset.get("thinking", True),
         },
     )
     worker.submit(job)
