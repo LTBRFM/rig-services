@@ -11,7 +11,12 @@ PID_FILE="$SCRIPT_DIR/server.pid"
 cd "$SCRIPT_DIR"
 source .venv/bin/activate
 
+# Allow up to 2 hours per generation — CPU needs ~72 min for 175s/50-step;
+# 24 GB GPU needs ~5 min.  Override with ACESTEP_GENERATION_TIMEOUT env var.
+export ACESTEP_GENERATION_TIMEOUT="${ACESTEP_GENERATION_TIMEOUT:-7200}"
+
 echo "[start.sh] Starting TTS-API server on port $PORT  (log: $LOG)"
+echo "[start.sh] ACESTEP_GENERATION_TIMEOUT=${ACESTEP_GENERATION_TIMEOUT}s"
 
 while true; do
     python3 -m uvicorn app.main:app \
