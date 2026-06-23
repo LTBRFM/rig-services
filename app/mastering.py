@@ -34,6 +34,7 @@ def apply_mastering(
     as-is so the caller always gets a valid output file.
     """
     if not settings.get("enabled", True):
+        logger.info("Mastering disabled — copying raw file as result")
         shutil.copy2(raw_path, mastered_path)
         return mastered_path
 
@@ -44,22 +45,57 @@ def apply_mastering(
             and reference_path.exists()
         )
 
+        # Log input levels
+        _log_audio_levels(raw_path, "Input (raw)")
+
         # Step 1: pedalboard DSP chain (always)
-        logger.info("Mastering: pedalboard DSP chain")
+        logger.info(
+            f"Mastering step 1/{'3' if ref_ok else '2'}: pedalboard DSP  "
+            f"[highpass={settings.get('low_cut_hz', 30)}Hz  "
+            f"comp={settings.get('compression_ratio', 3.0)}:{1}@{settings.get('compression_threshold_db', -20)}dB  "
+            f"shelf=+{settings.get('high_shelf_gain_db', 1.5)}dB@{settings.get('high_shelf_hz', 8000)}Hz  "
+            f"limiter={settings.get('limiter_ceiling_db', -1.0)}dBFS]"
+        )
         _run_pedalboard(raw_path, mastered_path, settings)
+        _log_audio_levels(mastered_path, "After pedalboard")
 
         # Step 2: matchering on top for tonal colour (when reference available)
         if ref_ok:
-            logger.info(f"Mastering: matchering against {reference_path.name}")
+            logger.info(f"Mastering step 2/3: matchering against {reference_path.name}")
             _run_matchering(mastered_path, mastered_path, reference_path)
+            _log_audio_levels(mastered_path, "After matchering")
 
         # Step 3: final LUFS + true-peak pass
-        _normalise_lufs_inplace(
-            mastered_path,
-            target_lufs=settings.get("target_lufs", -14.0),
-            ceiling_db=settings.get("limiter_ceiling_db", -1.0),
+        target_lufs = settings.get("target_lufs", -14.0)
+        ceiling_db  = settings.get("limiter_ceiling_db", -1.0)
+        logger.info(
+            f"Mastering step {'3/3' if ref_ok else '2/2'}: LUFS normalise  "
+            f"[target={target_lufs} LUFS  ceiling={ceiling_db} dBFS]"
         )
+        _normalise_lufs_inplace(mastered_path, target_lufs=target_lufs, ceiling_db=ceiling_db)
+        _log_audio_levels(mastered_path, "Final output")
+
         logger.info(f"Mastering complete → {mastered_path.name}")
+
+    except Exception:
+        logger.exception("Mastering failed — falling back to raw copy")
+        shutil.copy2(raw_path, mastered_path)
+
+    return mastered_path
+
+
+def _log_audio_levels(path: Path, label: str) -> None:
+    """Measure and log LUFS + peak for a WAV file."""
+    try:
+        import pyloudnorm as pyln  # type: ignore
+        audio, sr = sf.read(str(path), dtype="float64", always_2d=True)
+        meter     = pyln.Meter(sr)
+        loudness  = meter.integrated_loudness(audio)
+        peak_db   = 20 * np.log10(max(np.max(np.abs(audio)), 1e-9))
+        lufs_str  = f"{loudness:.1f} LUFS" if np.isfinite(loudness) else "LUFS=∞"
+        logger.debug(f"  {label}: {lufs_str}  peak={peak_db:.1f} dBFS  sr={sr}Hz  dur={len(audio)/sr:.1f}s")
+    except Exception as exc:
+        logger.debug(f"  {label}: level measurement failed — {exc}")
 
     except Exception:
         logger.exception("Mastering failed — falling back to raw copy")

@@ -26,3 +26,7 @@ data/reference.wav
 
 # Preset (user-specific, not committed)
 # preset.json is intentionally NOT gitignored — commit your preset for reproducibility
+
+# Logs (rotated files committed only if needed)
+logs/*.gz
+logs/*.log

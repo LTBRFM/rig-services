@@ -48,7 +48,26 @@ def submit(job: Job) -> Job:
     priority = _PRIORITY.get(job.type, 99)
     with _lock:
         _jobs[job.id] = job
+        queue_depth = _q.qsize()
     _q.put((priority, next(_seq), job))
+    logger.info(
+        f"Job submitted: id={job.id}  type={job.type.value}  "
+        f"priority={priority}  queue_depth={queue_depth + 1}"
+    )
+    if job.type == JobType.MUSIC:
+        p = job.params
+        logger.debug(
+            f"  Music params: prompt={p.get('prompt','')[:80]!r}  "
+            f"duration={p.get('duration')}  guidance={p.get('guidance_scale')}  "
+            f"bpm={p.get('bpm')}  thinking={p.get('thinking')}  "
+            f"lyrics_len={len(p.get('lyrics', ''))}"
+        )
+    elif job.type == JobType.TTS:
+        p = job.params
+        logger.debug(
+            f"  TTS params: voice={p.get('voice')}  lang={p.get('language')}  "
+            f"chars={len(p.get('text', ''))}"
+        )
     return job
 
 
@@ -102,14 +121,21 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
 
         job.status     = JobStatus.PROCESSING
         job.started_at = time.time()
-        logger.info(f"Processing job {job.id} ({job.type}, priority={_priority})")
+        logger.info(
+            f"Job started: id={job.id}  type={job.type.value}  priority={_priority}  "
+            f"queue_remaining={_q.qsize()}"
+        )
 
         try:
             if job.type == JobType.TTS:
                 model_manager.ensure("tts")
-                engine = model_manager.get_tts()
+                engine   = model_manager.get_tts()
                 language = job.params.get("language") or app_config.get("default_language", "en")
-                result   = engine.synthesize(job.params["text"], job.params["voice"], language)
+                logger.debug(
+                    f"TTS synthesising: job={job.id}  voice={job.params['voice']}  "
+                    f"lang={language}  chars={len(job.params['text'])}"
+                )
+                result = engine.synthesize(job.params["text"], job.params["voice"], language)
 
             elif job.type == JobType.MUSIC:
                 model_manager.ensure("music")
@@ -118,7 +144,16 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
                 def _music_progress(value: float, desc: str = "") -> None:
                     job.progress = float(value)
                     job.progress_desc = str(desc)
+                    if int(value * 100) % 10 == 0:   # log every 10%
+                        logger.debug(f"  Progress: job={job.id}  {value*100:.0f}%  {desc}")
 
+                logger.info(
+                    f"Music generating: job={job.id}  "
+                    f"prompt={job.params['prompt'][:60]!r}  "
+                    f"duration={job.params.get('duration')}  "
+                    f"guidance={job.params.get('guidance_scale')}  "
+                    f"thinking={job.params.get('thinking')}"
+                )
                 raw_result = engine.generate(
                     prompt=job.params["prompt"],
                     lyrics=job.params.get("lyrics", "[Instrumental]"),
@@ -130,15 +165,21 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
                 )
                 raw_path = Path(raw_result)
                 job.raw_path = str(raw_path)
+                logger.info(f"Music generated: job={job.id}  raw={raw_path.name}")
 
                 # Mastering post-processing
                 if preset_manager is not None:
                     from app.mastering import apply_mastering
                     mastering_cfg = preset_manager.mastering_settings()
-                    ref_path = Path("data/reference.wav")
+                    ref_path      = Path("data/reference.wav")
                     mastered_path = raw_path.parent / (raw_path.stem + "_mastered.wav")
-                    job.progress = 0.99
+                    job.progress      = 0.99
                     job.progress_desc = "Mastering audio..."
+                    logger.info(
+                        f"Mastering: job={job.id}  "
+                        f"matchering={'on' if mastering_cfg.get('matchering_enabled') and ref_path.exists() else 'off'}  "
+                        f"target_lufs={mastering_cfg.get('target_lufs', -14.0)}"
+                    )
                     apply_mastering(raw_path, mastered_path, mastering_cfg, ref_path)
                     result = mastered_path
                 else:
@@ -146,18 +187,24 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
             else:
                 raise ValueError(f"Unknown job type: {job.type}")
 
-            job.result_path  = str(result)
-            job.status       = JobStatus.DONE
+            job.result_path = str(result)
+            job.status      = JobStatus.DONE
+            logger.info(
+                f"Job completed: id={job.id}  type={job.type.value}  "
+                f"status=done  elapsed={round(job.completed_at - job.started_at, 1)}s  "
+                f"result={Path(str(result)).name}"
+            )
 
         except Exception as exc:
-            logger.exception(f"Job {job.id} failed")
+            logger.exception(f"Job failed: id={job.id}  type={job.type.value}  error={exc}")
             job.status = JobStatus.FAILED
             job.error  = str(exc)
 
         finally:
             job.completed_at = time.time()
-            elapsed          = round(job.completed_at - job.started_at, 1)
-            logger.info(f"Job {job.id} {job.status} in {elapsed}s")
+            if job.status != JobStatus.DONE:  # DONE already logged above
+                elapsed = round(job.completed_at - job.started_at, 1)
+                logger.info(f"Job finished: id={job.id}  status={job.status.value}  elapsed={elapsed}s")
 
             with _lock:
                 _current_job = None

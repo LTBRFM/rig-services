@@ -5,14 +5,19 @@ loading/unloading models only when the job type changes.
 """
 import json
 import logging
-import sys
+import time
+import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
+import app.logging_config as log_cfg
+from app.logging_config import request_id_var, LOG_FILE
 from app.model_manager import ModelManager
 from app.models import (
     Job, JobType,
@@ -22,17 +27,13 @@ from app.models import (
 from app.preset import PresetManager
 import app.worker as worker
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
-    stream=sys.stdout,
-)
+# ── Logging — must be set up before any other module creates a logger ─────────
+log_cfg.setup()
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CONFIG_PATH = "config.json"
-PRESET_PATH = Path("preset.json")
+CONFIG_PATH    = "config.json"
+PRESET_PATH    = Path("preset.json")
 REFERENCE_PATH = Path("data/reference.wav")
 
 with open(CONFIG_PATH) as _f:
@@ -46,11 +47,17 @@ preset_manager: PresetManager = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model_manager, preset_manager
+    logger.info("="*60)
+    logger.info("TTS-API starting up")
+    logger.info(f"Config: {CONFIG_PATH}")
+    logger.info(f"Log file: {LOG_FILE}")
     model_manager  = ModelManager(_config)
     preset_manager = PresetManager(PRESET_PATH)
     worker.start(model_manager, _config, preset_manager)
     logger.info("GPU worker started. API ready.")
+    logger.info("="*60)
     yield
+    logger.info("TTS-API shutting down")
 
 
 app = FastAPI(
@@ -77,6 +84,49 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# ── Request logging middleware ────────────────────────────────────────────────
+
+class _RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """
+    Assigns a short request ID to every HTTP request, logs start/end with
+    method, path, status code, and elapsed time.  The request ID is injected
+    into all log records generated during that request via request_id_var.
+    """
+    _skip_paths = {"/health"}  # high-frequency health checks — skip to reduce noise
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self._skip_paths:
+            return await call_next(request)
+
+        req_id = uuid.uuid4().hex[:8]
+        token  = request_id_var.set(req_id)
+        start  = time.perf_counter()
+        client = request.client.host if request.client else "unknown"
+        qs     = f"?{request.url.query}" if request.url.query else ""
+
+        logger.info(f"→ {request.method} {request.url.path}{qs}  client={client}")
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.exception(
+                f"✗ {request.method} {request.url.path}  UNHANDLED ERROR  {elapsed_ms:.1f}ms"
+            )
+            raise
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                f"← {request.method} {request.url.path}{qs}  "
+                f"status={response.status_code}  {elapsed_ms:.1f}ms"
+            )
+            request_id_var.reset(token)
+
+        response.headers["X-Request-Id"] = req_id
+        return response
+
+
+app.add_middleware(_RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,6 +159,63 @@ async def get_status():
 @app.get("/health", summary="Health check", tags=["Monitoring"])
 async def health():
     return {"status": "ok"}
+
+
+@app.get(
+    "/logs",
+    summary="Fetch recent server logs",
+    tags=["Monitoring"],
+    response_class=PlainTextResponse,
+)
+async def get_logs(lines: int = 200, level: str = None):
+    """
+    Returns the last N lines of the active server log as plain text.
+
+    Useful for diagnosing issues or tracing what happened during a job.
+
+    **Query parameters:**
+
+    | Parameter | Default | Description |
+    |-----------|---------|-------------|
+    | `lines`   | `200`   | Number of lines to return (max 2000) |
+    | `level`   | *(none)*| Filter to lines containing this level: `ERROR`, `WARNING`, `INFO`, `DEBUG` |
+
+    **Examples:**
+
+    Last 200 lines:
+    ```
+    GET /logs
+    ```
+
+    Last 500 errors only:
+    ```
+    GET /logs?lines=500&level=ERROR
+    ```
+
+    All warnings and errors (last 1000 lines searched):
+    ```
+    GET /logs?lines=1000&level=WARNING
+    ```
+
+    Pipe to `grep` for further filtering:
+    ```bash
+    curl http://host:8001/logs?lines=500 | grep "job_id=abc123"
+    ```
+    """
+    lines = min(max(lines, 1), 2000)
+    log_file = LOG_FILE
+
+    if not log_file.exists():
+        return PlainTextResponse("No log file yet.\n")
+
+    with open(log_file, encoding="utf-8", errors="replace") as f:
+        tail = deque(f, maxlen=lines)
+
+    if level:
+        level_upper = level.upper()
+        tail = [ln for ln in tail if level_upper in ln]
+
+    return PlainTextResponse("".join(tail))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

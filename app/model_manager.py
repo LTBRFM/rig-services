@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import torch
@@ -35,12 +36,14 @@ class ModelManager:
     def ensure(self, model_type: str) -> None:
         """Guarantee the requested model is loaded on GPU, unloading the other if necessary."""
         if self._loaded == model_type:
+            logger.debug(f"Model already loaded: {model_type}")
             return
 
         if self._loaded is not None:
             self._unload(self._loaded)
 
-        logger.info(f"Loading model: {model_type}")
+        logger.info(f"Loading model: {model_type}  |  {self._vram_summary()}")
+        t0 = time.time()
         if model_type == "tts":
             from app.tts_engine import TTSEngine
             self._tts_engine = TTSEngine(self.config)
@@ -51,7 +54,8 @@ class ModelManager:
             raise ValueError(f"Unknown model type: {model_type}")
 
         self._loaded = model_type
-        logger.info(f"Model ready: {model_type}  |  {self._vram_summary()}")
+        elapsed = round(time.time() - t0, 1)
+        logger.info(f"Model ready: {model_type}  elapsed={elapsed}s  |  {self._vram_summary()}")
 
     def get_tts(self):
         return self._tts_engine
@@ -82,7 +86,8 @@ class ModelManager:
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _unload(self, model_type: str) -> None:
-        logger.info(f"Unloading model: {model_type}")
+        logger.info(f"Unloading model: {model_type}  |  {self._vram_summary()}")
+        t0 = time.time()
         if model_type == "tts" and self._tts_engine:
             self._tts_engine.unload()
             self._tts_engine = None
@@ -91,7 +96,8 @@ class ModelManager:
             self._music_engine = None
         self._loaded = None
         _free_vram()
-        logger.info(f"Model unloaded: {model_type}  |  {self._vram_summary()}")
+        elapsed = round(time.time() - t0, 1)
+        logger.info(f"Model unloaded: {model_type}  elapsed={elapsed}s  |  {self._vram_summary()}")
 
     def _vram_summary(self) -> str:
         info = self.vram_info()
