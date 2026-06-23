@@ -97,12 +97,6 @@ def _log_audio_levels(path: Path, label: str) -> None:
     except Exception as exc:
         logger.debug(f"  {label}: level measurement failed — {exc}")
 
-    except Exception:
-        logger.exception("Mastering failed — falling back to raw copy")
-        shutil.copy2(raw_path, mastered_path)
-
-    return mastered_path
-
 
 # ── Pedalboard chain ──────────────────────────────────────────────────────────
 
