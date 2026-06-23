@@ -1,13 +1,12 @@
 """
 Audio mastering pipeline.
 
-Two modes:
-  1. Pedalboard DSP chain  — always available; no reference needed.
-  2. Matchering            — reference-based spectral/dynamic matching;
-                             activates when matchering_enabled=True AND a
-                             reference WAV exists at reference_path.
+Chain (when matchering is enabled):
+  1. Pedalboard DSP  — dynamics: highpass → compression → high-shelf EQ → limiter
+  2. Matchering      — tonal colour: spectral/dynamic matching to reference track
+  3. LUFS normalise  — final loudness + true-peak ceiling
 
-After either mode a final LUFS normalisation + true-peak ceiling is applied.
+When matchering is disabled only steps 1 + 3 run.
 """
 from __future__ import annotations
 
@@ -45,14 +44,16 @@ def apply_mastering(
             and reference_path.exists()
         )
 
+        # Step 1: pedalboard DSP chain (always)
+        logger.info("Mastering: pedalboard DSP chain")
+        _run_pedalboard(raw_path, mastered_path, settings)
+
+        # Step 2: matchering on top for tonal colour (when reference available)
         if ref_ok:
             logger.info(f"Mastering: matchering against {reference_path.name}")
-            _run_matchering(raw_path, mastered_path, reference_path)
-        else:
-            logger.info("Mastering: pedalboard DSP chain")
-            _run_pedalboard(raw_path, mastered_path, settings)
+            _run_matchering(mastered_path, mastered_path, reference_path)
 
-        # Final LUFS + true-peak pass on the mastered file
+        # Step 3: final LUFS + true-peak pass
         _normalise_lufs_inplace(
             mastered_path,
             target_lufs=settings.get("target_lufs", -14.0),
