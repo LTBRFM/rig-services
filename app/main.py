@@ -253,8 +253,13 @@ async def list_languages():
 @app.get("/preset", summary="Get global music preset", tags=["Preset"])
 async def get_preset():
     """
-    Returns the current global music preset.  All fields except `lyrics` in
-    `POST /music` fall back to this preset when not provided in the request.
+    Returns the current global music preset including all mastering parameters.
+
+    All generation fields (`prompt`, `guidance_scale`, `bpm`, `thinking`, `duration`)
+    are used as defaults when `POST /music` omits them — only `lyrics` is required.
+
+    The `mastering` object controls the full post-processing chain applied to every
+    generated song. See `PATCH /preset` for the complete parameter reference.
     """
     p = preset_manager.get()
     p["reference_uploaded"] = REFERENCE_PATH.exists()
@@ -268,21 +273,81 @@ async def patch_preset(updates: dict):
 
     Only send the fields you want to change — everything else is preserved.
 
-    **Examples:**
+    ---
 
-    Change prompt only:
+    ## Generation parameters
+
+    | Field | Default | Description |
+    |-------|---------|-------------|
+    | `prompt` | `""` | Music style description — used for every job unless overridden |
+    | `guidance_scale` | `7.0` | Prompt adherence (1–15; higher = stricter) |
+    | `bpm` | `null` | BPM hint; `null` = model auto-detects |
+    | `thinking` | `true` | LM chain-of-thought reasoning (higher quality, slower) |
+    | `duration` | `null` | Length in seconds (10–600); `null` = auto from lyrics |
+
+    ---
+
+    ## Mastering parameters (`mastering` object)
+
+    The mastering chain always runs in this order:
+    **Pedalboard DSP → Matchering (optional) → LUFS normalisation**
+
+    ### Dynamics & EQ (Pedalboard)
+
+    | Field | Default | Range | What it does |
+    |-------|---------|-------|--------------|
+    | `enabled` | `true` | bool | Master switch — disables entire mastering chain if false |
+    | `low_cut_hz` | `30.0` | 20–80 Hz | Highpass filter — removes sub-bass rumble |
+    | `compression_threshold_db` | `-20.0` | -30 to -10 dB | Level above which compression activates |
+    | `compression_ratio` | `3.0` | 2–10 | Compression strength (3:1 gentle, 8:1 heavy) |
+    | `compression_attack_ms` | `10.0` | 1–50 ms | How fast compression reacts to loud transients |
+    | `compression_release_ms` | `100.0` | 50–500 ms | How fast compression releases after loud section |
+    | `high_shelf_gain_db` | `1.5` | 0–4 dB | Brightness boost above `high_shelf_hz` |
+    | `high_shelf_hz` | `8000.0` | 6000–12000 Hz | Frequency where brightness boost starts |
+    | `limiter_ceiling_db` | `-1.0` | -3 to -0.1 dB | Hard ceiling — nothing exceeds this level |
+
+    ### Loudness (LUFS normalisation)
+
+    | Field | Default | Description |
+    |-------|---------|-------------|
+    | `target_lufs` | `-14.0` | Final loudness target (-14 = streaming, -9 = broadcast radio) |
+
+    ### Reference-based mastering (Matchering)
+
+    | Field | Default | Description |
+    |-------|---------|-------------|
+    | `matchering_enabled` | `false` | Enable tonal matching to uploaded reference track |
+
+    Upload a reference WAV first via `POST /preset/reference`, then set `matchering_enabled: true`.
+    The reference should be a professionally mastered track in the same genre and energy level.
+
+    ---
+
+    ## Ready-made mastering presets
+
+    **Streaming (Spotify / Apple Music standard):**
     ```json
-    { "prompt": "dark cinematic orchestral, strings, brass, timpani" }
+    { "mastering": { "target_lufs": -14.0, "compression_ratio": 3.0, "compression_threshold_db": -20.0 } }
     ```
 
-    Tweak mastering:
+    **Broadcast radio — punchy and loud:**
     ```json
-    { "mastering": { "target_lufs": -9.0, "matchering_enabled": true } }
+    { "mastering": { "target_lufs": -9.0, "compression_ratio": 4.0, "compression_threshold_db": -18.0, "high_shelf_gain_db": 2.0, "limiter_ceiling_db": -0.5 } }
     ```
 
-    Enable matchering (upload a reference track first via POST /preset/reference):
+    **Gentle — preserve dynamics:**
+    ```json
+    { "mastering": { "target_lufs": -16.0, "compression_ratio": 2.0, "compression_threshold_db": -24.0, "high_shelf_gain_db": 1.0 } }
+    ```
+
+    **Enable matchering (reference track must be uploaded first):**
     ```json
     { "mastering": { "matchering_enabled": true } }
+    ```
+
+    **Disable mastering entirely:**
+    ```json
+    { "mastering": { "enabled": false } }
     ```
     """
     result = preset_manager.patch(updates)
