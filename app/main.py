@@ -405,19 +405,19 @@ async def patch_preset(updates: dict):
     |-------|---------|-------|--------------|
     | `enabled` | `true` | bool | Master switch — disables entire mastering chain if false |
     | `low_cut_hz` | `30.0` | 20–80 Hz | Highpass filter — removes sub-bass rumble |
-    | `compression_threshold_db` | `-20.0` | -30 to -10 dB | Level above which compression activates |
-    | `compression_ratio` | `3.0` | 2–10 | Compression strength (3:1 gentle, 8:1 heavy) |
+    | `compression_threshold_db` | `-18.0` | -30 to -10 dB | Level above which compression activates |
+    | `compression_ratio` | `4.0` | 2–10 | Compression strength (3:1 gentle, 8:1 heavy) |
     | `compression_attack_ms` | `10.0` | 1–50 ms | How fast compression reacts to loud transients |
     | `compression_release_ms` | `100.0` | 50–500 ms | How fast compression releases after loud section |
-    | `high_shelf_gain_db` | `1.5` | 0–4 dB | Brightness boost above `high_shelf_hz` |
+    | `high_shelf_gain_db` | `2.0` | 0–4 dB | Brightness boost above `high_shelf_hz` |
     | `high_shelf_hz` | `8000.0` | 6000–12000 Hz | Frequency where brightness boost starts |
-    | `limiter_ceiling_db` | `-1.0` | -3 to -0.1 dB | Hard ceiling — nothing exceeds this level |
+    | `limiter_ceiling_db` | `-0.5` | -3 to -0.1 dB | Hard ceiling — nothing exceeds this level |
 
     ### Loudness (LUFS normalisation)
 
     | Field | Default | Description |
     |-------|---------|-------------|
-    | `target_lufs` | `-14.0` | Final loudness target (-14 = streaming, -9 = broadcast radio) |
+    | `target_lufs` | `-12.0` | Final loudness target — matches commercial AI generators (Suno/Udio). Use -14 for streaming platforms, -9 for broadcast radio. |
 
     ### Reference-based mastering (Matchering)
 
@@ -432,19 +432,24 @@ async def patch_preset(updates: dict):
 
     ## Ready-made mastering presets
 
-    **Streaming (Spotify / Apple Music standard):**
+    **Default — commercial AI generator loudness (matches Suno/Udio):**
     ```json
-    { "mastering": { "target_lufs": -14.0, "compression_ratio": 3.0, "compression_threshold_db": -20.0 } }
+    { "mastering": { "target_lufs": -12.0, "compression_ratio": 4.0, "compression_threshold_db": -18.0, "high_shelf_gain_db": 2.0, "limiter_ceiling_db": -0.5 } }
     ```
 
-    **Broadcast radio — punchy and loud:**
+    **Streaming (Spotify / Apple Music standard):**
     ```json
-    { "mastering": { "target_lufs": -9.0, "compression_ratio": 4.0, "compression_threshold_db": -18.0, "high_shelf_gain_db": 2.0, "limiter_ceiling_db": -0.5 } }
+    { "mastering": { "target_lufs": -14.0, "compression_ratio": 3.0, "compression_threshold_db": -20.0, "high_shelf_gain_db": 1.5, "limiter_ceiling_db": -1.0 } }
+    ```
+
+    **Broadcast radio — maximum loudness:**
+    ```json
+    { "mastering": { "target_lufs": -9.0, "compression_ratio": 5.0, "compression_threshold_db": -16.0, "high_shelf_gain_db": 2.5, "limiter_ceiling_db": -0.3 } }
     ```
 
     **Gentle — preserve dynamics:**
     ```json
-    { "mastering": { "target_lufs": -16.0, "compression_ratio": 2.0, "compression_threshold_db": -24.0, "high_shelf_gain_db": 1.0 } }
+    { "mastering": { "target_lufs": -16.0, "compression_ratio": 2.0, "compression_threshold_db": -24.0, "high_shelf_gain_db": 1.0, "limiter_ceiling_db": -1.0 } }
     ```
 
     **Enable matchering (reference track must be uploaded first):**
