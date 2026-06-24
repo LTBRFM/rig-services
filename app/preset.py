@@ -25,15 +25,15 @@ DEFAULT_PRESET: Dict[str, Any] = {
     "duration":       None,
     "mastering": {
         "enabled":                  True,
-        "target_lufs":              -14.0,
+        "target_lufs":              -12.0,    # broadcast feel, matches commercial AI generators
         "low_cut_hz":               30.0,
-        "compression_ratio":        3.0,
-        "compression_threshold_db": -20.0,
+        "compression_ratio":        4.0,      # tighter dynamics = more perceived loudness
+        "compression_threshold_db": -18.0,
         "compression_attack_ms":    10.0,
         "compression_release_ms":   100.0,
-        "high_shelf_gain_db":       1.5,
+        "high_shelf_gain_db":       2.0,      # brighter top end
         "high_shelf_hz":            8000.0,
-        "limiter_ceiling_db":       -1.0,
+        "limiter_ceiling_db":       -0.5,     # harder ceiling for more loudness
         "matchering_enabled":       False,
     },
 }
