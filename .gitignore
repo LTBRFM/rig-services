@@ -14,6 +14,12 @@ output/
 .DS_Store
 test_results/
 
+# Environment / secrets
+.env
+
+# Local benchmark/progress cache
+.cache/
+
 # Runtime
 server.log
 server.pid
