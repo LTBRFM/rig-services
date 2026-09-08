@@ -129,8 +129,12 @@ class TTSEngine:
         voice_path = self._find_voice_path(voice_name)
         profile    = self._load_profile(voice_name)
 
+        # Include the sample's mtime + size so replacing a voice WAV invalidates
+        # previously cached outputs for that voice.
+        vstat       = voice_path.stat()
         cache_key   = hashlib.sha256(
-            f"{text}|{voice_name}|{language}|{json.dumps(profile, sort_keys=True)}".encode()
+            f"{text}|{voice_name}|{language}|{json.dumps(profile, sort_keys=True)}"
+            f"|{vstat.st_mtime_ns}|{vstat.st_size}".encode()
         ).hexdigest()[:16]
         output_path = self.output_dir / f"{cache_key}.wav"
 
