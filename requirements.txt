@@ -5,6 +5,7 @@
 # so the old stream_generator / gpt_inference patches are no longer needed.
 coqui-tts[ja]>=0.27.0,<0.28   # [ja] = cutlet + mecab for Japanese text
 pypinyin>=0.50                  # required for zh-cn
+spacy[ja]>=3.7,<4               # sentence splitting for texts >=250 chars (enable_text_splitting)
 
 # coqui-tts 0.27.x targets transformers 4.57+; 5.x has not been validated with it.
 transformers>=4.57,<5
