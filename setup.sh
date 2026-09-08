@@ -4,13 +4,19 @@ set -e
 echo "=== TTS API Setup ==="
 
 OS="$(uname -s)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # ── 1. Find Python 3.10+ ──────────────────────────────────────────────────────
 PYTHON=""
-for candidate in python3.12 python3.11 python3.10; do
+for candidate in python3.12 python3.11 python3.10 python3; do
     if command -v "$candidate" &>/dev/null; then
-        PYTHON="$candidate"
-        break
+        MINOR="$("$candidate" -c 'import sys; print(sys.version_info.minor)')"
+        MAJOR="$("$candidate" -c 'import sys; print(sys.version_info.major)')"
+        if [ "$MAJOR" -eq 3 ] && [ "$MINOR" -ge 10 ]; then
+            PYTHON="$candidate"
+            break
+        fi
     fi
 done
 
@@ -53,7 +59,18 @@ fi
 
 if [ ! -d ".venv" ]; then
     echo "→ Creating virtualenv..."
-    "$PYTHON" -m venv .venv
+    if "$PYTHON" -m venv .venv 2>/dev/null; then
+        :
+    else
+        # Debian/Ubuntu without python3-venv: ensurepip is missing and we may
+        # not have sudo.  Create the venv without pip and bootstrap it manually.
+        echo "→ ensurepip unavailable — bootstrapping pip via get-pip.py (no sudo needed)..."
+        rm -rf .venv
+        "$PYTHON" -m venv --without-pip .venv
+        curl -sSL https://bootstrap.pypa.io/get-pip.py -o .venv/get-pip.py
+        .venv/bin/python .venv/get-pip.py --quiet
+        rm -f .venv/get-pip.py
+    fi
 fi
 
 source .venv/bin/activate
@@ -62,15 +79,18 @@ pip install --upgrade pip --quiet
 # ── 3. Install PyTorch with the right CUDA/CPU variant ───────────────────────
 echo "→ Detecting hardware for PyTorch install..."
 
+GPU_VRAM_MB=0
 if [ "$OS" = "Linux" ] && command -v nvidia-smi &>/dev/null; then
     # Detect CUDA version from driver
     CUDA_VER=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+" | head -1)
     CUDA_MAJOR=$(echo "$CUDA_VER" | cut -d. -f1)
     CUDA_MINOR=$(echo "$CUDA_VER" | cut -d. -f2)
-    echo "→ NVIDIA GPU detected (driver reports CUDA $CUDA_VER)"
+    GPU_VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')
+    echo "→ NVIDIA GPU detected (driver reports CUDA $CUDA_VER, ${GPU_VRAM_MB} MiB VRAM)"
 
-    # Pick best matching PyTorch CUDA wheel
-    if [ "$CUDA_MAJOR" -ge 12 ] && [ "$CUDA_MINOR" -ge 4 ]; then
+    # Pick best matching PyTorch CUDA wheel.  Drivers are backward compatible,
+    # so a CUDA 13.x driver runs the cu124 wheel fine.
+    if [ "$CUDA_MAJOR" -gt 12 ] || { [ "$CUDA_MAJOR" -eq 12 ] && [ "$CUDA_MINOR" -ge 4 ]; }; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu124"
     elif [ "$CUDA_MAJOR" -ge 12 ]; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu121"
@@ -91,78 +111,46 @@ fi
 echo "→ Installing TTS and API dependencies..."
 pip install -r requirements.txt --quiet
 
-# ── 5. Install ACE-Step 1.5 ──────────────────────────────────────────────────
-echo "→ Installing ACE-Step 1.5 music generation..."
-pip install "git+https://github.com/ace-step/ACE-Step-1.5.git" --quiet
+# ── 5. Install ACE-Step 1.5 (optional — music generation) ────────────────────
+# ACE-Step xl-sft needs ~14 GB VRAM, turbo ~7 GB.  It also drags in a large
+# dependency set that can upgrade transformers past what coqui-tts supports.
+# Opt in explicitly:   INSTALL_MUSIC=1 ./setup.sh
+if [ "${INSTALL_MUSIC:-0}" = "1" ]; then
+    if [ "$GPU_VRAM_MB" -gt 0 ] && [ "$GPU_VRAM_MB" -lt 10000 ]; then
+        echo "→ WARNING: GPU has only ${GPU_VRAM_MB} MiB VRAM — ACE-Step xl-sft needs ~14 GB."
+        echo "           Consider config.json music.checkpoint_variant = acestep-v15-turbo."
+    fi
+    echo "→ Installing ACE-Step 1.5 music generation..."
+    pip install "git+https://github.com/ace-step/ACE-Step-1.5.git" --quiet
+else
+    echo "→ Skipping ACE-Step (music).  Re-run with INSTALL_MUSIC=1 to enable POST /music."
+fi
 
-# ── 6. Patch TTS for transformers 4.46+ / 4.50+ compatibility ─────────────────
-# ACE-Step upgrades transformers, which:
-#   - 4.46+: removes BeamSearchScorer from public namespace
-#   - 4.50+: PreTrainedModel no longer inherits GenerationMixin
-echo "→ Patching TTS for transformers 4.46+/4.50+ compatibility..."
+# ── 6. Download XTTS-v2 weights now (otherwise fetched lazily on first job) ──
+echo "→ Ensuring XTTS-v2 weights are present..."
 python - <<'PYEOF'
-import pathlib, TTS
-
-tts_root = pathlib.Path(TTS.__file__).parent
-
-# Patch 1: stream_generator.py — BeamSearchScorer removed from public API in 4.46+
-sg = tts_root / "tts/layers/xtts/stream_generator.py"
-if sg.exists():
-    src = sg.read_text()
-    old = """from transformers import (
-    BeamSearchScorer,
-    ConstrainedBeamSearchScorer,
-    DisjunctiveConstraint,
-    GenerationConfig,
-    GenerationMixin,
-    LogitsProcessorList,
-    PhrasalConstraint,
-    PreTrainedModel,
-    StoppingCriteriaList,
-)"""
-    new = """from transformers.generation.beam_search import BeamSearchScorer, ConstrainedBeamSearchScorer
-from transformers.generation.beam_constraints import DisjunctiveConstraint, PhrasalConstraint
-from transformers import (
-    GenerationConfig,
-    GenerationMixin,
-    LogitsProcessorList,
-    PreTrainedModel,
-    StoppingCriteriaList,
-)"""
-    if old in src:
-        sg.write_text(src.replace(old, new))
-        print(f"  Patched: {sg}")
-    else:
-        print(f"  Already patched: {sg}")
-
-# Patch 2: gpt_inference.py — GenerationMixin not inherited in 4.50+
-gi = tts_root / "tts/layers/xtts/gpt_inference.py"
-if gi.exists():
-    src = gi.read_text()
-    if "from transformers.generation import GenerationMixin" not in src:
-        src = src.replace(
-            "from transformers import GPT2PreTrainedModel",
-            "from transformers import GPT2PreTrainedModel\nfrom transformers.generation import GenerationMixin"
-        ).replace(
-            "class GPT2InferenceModel(GPT2PreTrainedModel):",
-            "class GPT2InferenceModel(GPT2PreTrainedModel, GenerationMixin):"
-        )
-        gi.write_text(src)
-        print(f"  Patched: {gi}")
-    else:
-        print(f"  Already patched: {gi}")
+import json, pathlib
+from huggingface_hub import snapshot_download
+cfg = json.load(open("config.json"))
+d = pathlib.Path(cfg["tts"]["model_dir"])
+if not (d / "model.pth").exists():
+    snapshot_download(repo_id=cfg["tts"]["model_repo"], local_dir=str(d))
+print(f"  XTTS-v2 ready in {d}")
 PYEOF
 
+# ── 7. Smoke test ─────────────────────────────────────────────────────────────
+python - <<'PYEOF'
+import torch, TTS
+print(f"  coqui-tts {TTS.__version__}  torch {torch.__version__}  cuda={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    p = torch.cuda.get_device_properties(0)
+    print(f"  GPU: {p.name}  {p.total_memory/1e9:.1f} GB")
+PYEOF
 
 echo ""
 echo "✓ Setup complete."
 echo ""
 echo "Next steps:"
 echo "  1. Drop voice sample WAV files into voices/"
-echo "  2. Run:  ./start.sh"
-echo "  3. Open: http://localhost:8000/docs"
-echo ""
-echo "Note: First run will download model weights:"
-echo "  - XTTS-v2:                ~2 GB  (TTS)"
-echo "  - ACE-Step XL SFT (DiT): ~19 GB (Music)"
-echo "  - ACE-Step LM 1.7B:       ~3 GB  (Music)"
+echo "  2. Run:  ./start.sh          (or install the systemd unit — see README)"
+echo "  3. Open: http://<this-host>:$(python -c 'import json;print(json.load(open("config.json")).get("port",8000))')/docs"

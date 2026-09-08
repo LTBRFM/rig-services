@@ -3,6 +3,7 @@ Unified GPU API — TTS + Music Generation
 Both models share a single GPU; the worker processes jobs sequentially,
 loading/unloading models only when the job type changes.
 """
+import importlib.util
 import json
 import logging
 import time
@@ -532,6 +533,15 @@ async def submit_music(request: MusicRequest):
     }
     ```
     """
+    if importlib.util.find_spec("acestep") is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Music generation is not installed on this server (ACE-Step missing). "
+                "Re-run setup with INSTALL_MUSIC=1 on a GPU with >=10 GB VRAM."
+            ),
+        )
+
     preset = preset_manager.get()
 
     # Merge: request fields override preset; None means "use preset"

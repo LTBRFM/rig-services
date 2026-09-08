@@ -15,11 +15,32 @@ High-quality Text-to-Speech REST API powered by **XTTS-v2** — the best open-so
 ## Setup
 
 ```bash
-cd tts-api
-./setup.sh        # creates .venv and installs dependencies (~4–6 GB first run)
+cd rig-services
+./setup.sh                    # TTS only: creates .venv, installs deps, downloads XTTS-v2 (~2 GB)
+INSTALL_MUSIC=1 ./setup.sh    # additionally install ACE-Step music generation (needs ≥10 GB VRAM)
 ```
 
-> **First run** downloads the XTTS-v2 model weights (~2 GB) from HuggingFace automatically.
+`setup.sh` needs no root: if `python3-venv`/ensurepip is missing it bootstraps
+pip from `get-pip.py` inside the venv.
+
+> **Python 3.12 note:** the original `TTS` package refuses Python ≥3.12, so the
+> maintained fork [`coqui-tts`](https://pypi.org/project/coqui-tts/) is used.
+> It provides the same `TTS.*` import namespace and needs no transformers patches.
+
+### Linux rig (Ubuntu 24.04, GTX 1660 Ti 6 GB) — verified
+
+| Component     | Version                   |
+|---------------|---------------------------|
+| Python        | 3.12.3 (system)           |
+| torch         | 2.5.1+cu124 (driver 595 / CUDA 13.2 is backward compatible) |
+| coqui-tts     | 0.27.5                    |
+| transformers  | 4.57.x (pinned `<5`)      |
+| XTTS-v2 VRAM  | ~2.0 GB peak              |
+| Speed         | ~2.5 s for a 5 s sentence; ~20 s cold model load on first job |
+
+Music generation (ACE-Step) is **not installed** on this rig: `xl-sft` needs
+~14 GB VRAM and the 1660 Ti has 6 GB.  `POST /music` returns **503** with an
+explanatory message.  TTS is unaffected.
 
 ---
 
@@ -44,11 +65,41 @@ voices/
 
 ## Start the Server
 
+### Option A — foreground with auto-restart
+
 ```bash
-./start.sh
+./start.sh            # port from config.json (8000); ./start.sh 8001 to override
+```
+
+### Option B — systemd user service (recommended on the Linux rig)
+
+Runs at boot without a login (linger enabled), restarts on crash, logs to journald.
+
+```bash
+cp tts-api.service ~/.config/systemd/user/     # edit WorkingDirectory/ExecStart if the repo moved
+systemctl --user daemon-reload
+systemctl --user enable --now tts-api.service
+loginctl enable-linger "$USER"                  # keep it running after logout / start at boot
+
+systemctl --user status tts-api.service         # state
+journalctl --user -u tts-api.service -f         # live log
+systemctl --user restart tts-api.service        # after code changes
 ```
 
 The API listens on all interfaces (`0.0.0.0:8000`) — accessible on your local network.
+On the rig that is **http://192.168.50.61:8000** (Swagger UI at `/docs`).
+Application logs also go to `logs/tts-api.log` and are readable remotely via `GET /logs`.
+
+### From another machine
+
+```bash
+API=http://192.168.50.61:8000
+JOB=$(curl -s -X POST $API/tts -H 'Content-Type: application/json' \
+  -d '{"text":"Good morning, you are listening to the breakfast show.","voice":"en_female","language":"en"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+until curl -s $API/jobs/$JOB | grep -q '"status":"done"'; do sleep 1; done
+curl -s $API/result/$JOB -o speech.wav
+```
 
 ---
 
@@ -71,13 +122,14 @@ curl http://localhost:8000/voices
 ---
 
 ### `POST /tts`
-Synthesise speech. Returns a WAV audio file.
+Submit a synthesis job. Returns `{"job_id": ..., "status": "pending", "queue_position": N}`
+immediately; poll `GET /jobs/{job_id}` until `status == "done"`, then download the
+WAV from `GET /result/{job_id}`.  Identical requests are served from the on-disk cache.
 
 ```bash
 curl -X POST http://localhost:8000/tts \
   -H "Content-Type: application/json" \
-  -d '{"text": "Hello world!", "voice": "alice", "language": "en"}' \
-  --output speech.wav
+  -d '{"text": "Hello world!", "voice": "alice", "language": "en"}'
 ```
 
 **Request body:**
@@ -133,4 +185,7 @@ Health check — returns `{"status": "ok"}`.
 | Mode | RAM  | VRAM | Speed (typical sentence) |
 |------|------|------|--------------------------|
 | CPU  | 8 GB | —    | ~30–120 s                |
-| GPU  | 8 GB | 4 GB | ~3–10 s                  |
+| GPU  | 8 GB | 4 GB | ~2–10 s (GTX 1660 Ti: ~2.5 s) |
+
+Music generation (ACE-Step, optional) additionally needs ~14 GB VRAM for `xl-sft`
+or ~7 GB for `turbo`.

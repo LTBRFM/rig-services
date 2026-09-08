@@ -187,8 +187,9 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
             else:
                 raise ValueError(f"Unknown job type: {job.type}")
 
-            job.result_path = str(result)
-            job.status      = JobStatus.DONE
+            job.result_path  = str(result)
+            job.completed_at = time.time()
+            job.status       = JobStatus.DONE
             logger.info(
                 f"Job completed: id={job.id}  type={job.type.value}  "
                 f"status=done  elapsed={round(job.completed_at - job.started_at, 1)}s  "
@@ -201,7 +202,8 @@ def _run(model_manager, app_config: Dict[str, Any], preset_manager=None) -> None
             job.error  = str(exc)
 
         finally:
-            job.completed_at = time.time()
+            if job.completed_at is None:
+                job.completed_at = time.time()
             if job.status != JobStatus.DONE:  # DONE already logged above
                 elapsed = round(job.completed_at - job.started_at, 1)
                 logger.info(f"Job finished: id={job.id}  status={job.status.value}  elapsed={elapsed}s")
