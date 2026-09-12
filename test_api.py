@@ -37,6 +37,24 @@ def _req(method, path, body=None, raw=False):
         return {"_http_error": e.code, "_body": e.read().decode()}
 
 
+def _upload(path, fields, filename, file_bytes, method="POST"):
+    """Minimal multipart/form-data POST using only the stdlib."""
+    boundary = "----tts-api-test-boundary"
+    body = b""
+    for k, v in fields.items():
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").encode()
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+             f"Content-Type: application/octet-stream\r\n\r\n").encode() + file_bytes + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(BASE + path, data=body, method=method)
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode() or "{}")
+
+
 def ok(label, condition, detail=""):
     global PASS, FAIL
     if condition:
@@ -91,6 +109,33 @@ def run_tests(skip_music=False):
     defaults = _req("GET", "/profile/defaults")
     ok("GET /profile/defaults has temperature",
        "temperature" in defaults, str(defaults))
+
+    # ── Voice upload / delete round-trip ─────────────────────────────────────
+    section("1b. Voice Upload")
+
+    sample = os.path.join("voices", "en_female.wav")
+    if os.path.exists(sample):
+        with open(sample, "rb") as f:
+            sample_bytes = f.read()
+        name = "zz_test_upload"
+        _req("DELETE", "/voices/" + name)  # clean up any leftover from a previous run
+        code, resp = _upload("/voices", {"name": name, "profile": '{"temperature": 0.5}'}, "sample.wav", sample_bytes)
+        ok("POST /voices stores sample (201)", code == 201 and resp.get("name") == name, f"{code} {resp}")
+        ok("POST /voices applies profile", resp.get("profile", {}).get("temperature") == 0.5, str(resp.get("profile")))
+        code, resp = _upload("/voices", {"name": name}, "sample.wav", sample_bytes)
+        ok("POST /voices duplicate name → 409", code == 409, f"{code} {resp}")
+        code, resp = _upload("/voices", {"name": name, "overwrite": "true"}, "sample.wav", sample_bytes)
+        ok("POST /voices overwrite=true replaces (201, replaced=true)", code == 201 and resp.get("replaced") is True, f"{code} {resp}")
+        listed = [v["name"] for v in _req("GET", "/voices").get("voices", [])]
+        ok("Uploaded voice appears in GET /voices", name in listed, str(listed))
+        code, resp = _upload("/voices", {"name": "zz_bad"}, "bad.wav", b"this is not audio")
+        ok("POST /voices rejects undecodable audio (422)", code == 422, f"{code} {resp}")
+        d = _req("DELETE", "/voices/" + name)
+        ok("DELETE /voices/{name} removes sample + profile", d.get("status") == "ok" and f"{name}.json" in d.get("removed", []), str(d))
+        d = _req("DELETE", "/voices/" + name)
+        ok("DELETE missing voice → 404", d.get("_http_error") == 404, str(d))
+    else:
+        print("     (skipped — voices/en_female.wav not found locally)")
 
     # ── TTS synthesis ─────────────────────────────────────────────────────────
     section("2. TTS Synthesis")

@@ -12,7 +12,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -23,6 +23,7 @@ from app.model_manager import ModelManager
 from app.models import (
     Job, JobType,
     MusicRequest, TTSRequest,
+    VoiceInfo, VoiceListResponse, VoiceUploadResponse, VOICE_NAME_RE,
     SUPPORTED_LANGUAGES,
 )
 from app.preset import PresetManager
@@ -71,6 +72,10 @@ app = FastAPI(
         "1. `POST /tts` or `POST /music` → receive `job_id`\n"
         "2. Poll `GET /jobs/{job_id}` until `status == done` (music jobs include `progress` 0–100)\n"
         "3. Download `GET /result/{job_id}` (mastered) or `GET /result/{job_id}?raw=true` (pre-mastering)\n\n"
+        "## Voices\n"
+        "TTS clones the speaker from a short reference sample. List the installed samples via "
+        "`GET /voices`, add your own via `POST /voices` (multipart upload, 5–30 s of clean speech) "
+        "and remove them via `DELETE /voices/{name}`.\n\n"
         "## Global Preset\n"
         "Configure a single style via `PATCH /preset` — then `POST /music` only needs `lyrics`.\n"
         "Ideal for scheduled generation (e.g. service-update songs every 30 minutes).\n\n"
@@ -81,7 +86,7 @@ app = FastAPI(
         "3. **LUFS normalisation** — final loudness + true-peak ceiling\n\n"
         "Upload a reference track via `POST /preset/reference` and enable via `PATCH /preset`."
     ),
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
@@ -315,32 +320,192 @@ async def submit_tts(request: TTSRequest):
     return {"job_id": job.id, "status": job.status, "queue_position": pos}
 
 
-@app.get("/voices", summary="List available TTS voices", tags=["TTS"])
+VOICE_AUDIO_FORMATS = {".wav", ".mp3", ".flac", ".ogg"}
+MAX_VOICE_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _voices_dir() -> Path:
+    d = Path(_config["voices_dir"])
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _voice_entry(sample: Path) -> dict:
+    """Build the /voices record for one sample file (no model needed)."""
+    from app.tts_engine import PROFILE_DEFAULTS
+    profile_path = sample.with_suffix(".json")
+    overrides = {}
+    if profile_path.exists():
+        with open(profile_path) as pf:
+            overrides = {k: v for k, v in json.load(pf).items() if not k.startswith("_")}
+    return {
+        "name":    sample.stem,
+        "file":    sample.name,
+        "format":  sample.suffix.lstrip(".").lower(),
+        "profile": {**PROFILE_DEFAULTS, **overrides},
+    }
+
+
+def _is_voice_sample(f: Path) -> bool:
+    return f.is_file() and not f.name.startswith(".") and f.suffix.lower() in VOICE_AUDIO_FORMATS
+
+
+def _find_voice_samples(name: str) -> list[Path]:
+    """All sample files whose stem matches *name* (case-insensitive, any format)."""
+    return [
+        f for f in _voices_dir().iterdir()
+        if _is_voice_sample(f) and f.stem.lower() == name.lower()
+    ]
+
+
+@app.get("/voices", summary="List available TTS voices", tags=["TTS"], response_model=VoiceListResponse)
 async def list_voices():
     """
-    Lists all voice WAV files in the `voices/` directory with their profile settings.
+    Lists all voice sample files in the `voices/` directory with their profile settings.
     The `name` field is what you pass as `voice` in POST /tts.
     """
-    # Instantiate a lightweight reader — no model needed just for listing
-    from app.tts_engine import TTSEngine, PROFILE_DEFAULTS
-    from pathlib import Path
-
-    voices_dir = Path(_config["voices_dir"])
-    voices_dir.mkdir(exist_ok=True)
-    results = []
-    for f in sorted(voices_dir.iterdir()):
-        if f.is_file() and f.suffix.lower() in {".wav", ".mp3", ".flac", ".ogg"}:
-            profile_path = voices_dir / f"{f.stem}.json"
-            overrides = {}
-            if profile_path.exists():
-                with open(profile_path) as pf:
-                    overrides = {k: v for k, v in json.load(pf).items() if not k.startswith("_")}
-            results.append({
-                "name":    f.stem,
-                "file":    f.name,
-                "profile": {**PROFILE_DEFAULTS, **overrides},
-            })
+    results = [_voice_entry(f) for f in sorted(_voices_dir().iterdir()) if _is_voice_sample(f)]
     return {"voices": results}
+
+
+@app.post(
+    "/voices",
+    summary="Upload a voice sample",
+    tags=["TTS"],
+    status_code=201,
+    response_model=VoiceUploadResponse,
+    responses={
+        201: {"description": "Voice sample stored and immediately usable in POST /tts"},
+        409: {"description": "A voice with this name already exists and `overwrite` is false"},
+        413: {"description": "File exceeds the 50 MB limit"},
+        422: {"description": "Invalid name, unsupported format, undecodable audio, or malformed profile JSON"},
+    },
+)
+async def upload_voice(
+    file: UploadFile = File(..., description="Speaker sample — WAV, MP3, FLAC or OGG. 5–30 s of clean single-speaker speech works best."),
+    name: str | None = Form(None, description="Voice name to register (letters, digits, `_`, `-`; max 64 chars). Defaults to the uploaded file's stem."),
+    overwrite: bool = Form(False, description="Replace an existing voice with the same name. Cached TTS outputs for that voice are invalidated automatically."),
+    profile: str | None = Form(None, description='Optional JSON object of XTTS parameter overrides, stored as `<name>.json` (see GET /profile/defaults), e.g. `{"temperature": 0.65, "speed": 1.05}`.'),
+):
+    """
+    Upload a reference recording and register it as a TTS voice.
+
+    After a **201** response the voice appears in `GET /voices` and can be used
+    right away as `voice` in `POST /tts` — no restart required.
+
+    **Multipart fields**
+
+    | Field | Required | Description |
+    |-------|----------|-------------|
+    | `file` | yes | Audio sample (`.wav`, `.mp3`, `.flac`, `.ogg`), max 50 MB |
+    | `name` | no | Voice identifier; defaults to the file name without extension |
+    | `overwrite` | no | `true` to replace an existing voice (default `false` → **409**) |
+    | `profile` | no | JSON string with synthesis overrides, saved next to the sample |
+
+    **Example**
+    ```bash
+    curl -X POST http://host:8000/voices \\
+      -F "file=@narrator.wav" -F "name=narrator" \\
+      -F 'profile={"temperature": 0.65, "speed": 1.0}'
+    ```
+
+    **Tips for best quality:** WAV at 22 kHz or higher, 10–30 seconds of clean
+    speech, single speaker, no background noise or music.
+    """
+    import soundfile as sf
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in VOICE_AUDIO_FORMATS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported file type '{suffix or '(none)'}'. Accepted: {sorted(VOICE_AUDIO_FORMATS)}",
+        )
+
+    voice_name = (name or Path(file.filename).stem).strip()
+    if not VOICE_NAME_RE.match(voice_name):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid voice name — use letters, digits, '_' or '-' (max 64 chars, must start with a letter or digit)",
+        )
+
+    profile_overrides = None
+    if profile is not None and profile.strip():
+        try:
+            profile_overrides = json.loads(profile)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=422, detail=f"profile is not valid JSON: {e}")
+        if not isinstance(profile_overrides, dict):
+            raise HTTPException(status_code=422, detail="profile must be a JSON object")
+
+    existing = _find_voice_samples(voice_name)
+    if existing and not overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Voice '{voice_name}' already exists — resend with overwrite=true or choose another name",
+        )
+
+    content = await file.read()
+    if len(content) > MAX_VOICE_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Voice sample exceeds the 50 MB limit")
+    if not content:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty")
+
+    voices_dir = _voices_dir()
+    target     = voices_dir / f"{voice_name}{suffix}"
+    tmp        = voices_dir / f".{voice_name}.upload{suffix}"   # hidden → never listed
+    tmp.write_bytes(content)
+    try:
+        info = sf.info(str(tmp))
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"File is not decodable audio: {e}")
+
+    # Replace atomically; drop any other-format sample with the same stem so the
+    # engine's voice lookup stays unambiguous.
+    for old in existing:
+        if old != target:
+            old.unlink(missing_ok=True)
+    tmp.replace(target)
+
+    if profile_overrides is not None:
+        with open(target.with_suffix(".json"), "w") as pf:
+            json.dump(profile_overrides, pf, indent=2)
+
+    logger.info(
+        f"Voice sample uploaded: name='{voice_name}' file={target.name} "
+        f"({len(content) // 1024} KB, {info.duration:.1f}s @ {info.samplerate} Hz) replaced={bool(existing)}"
+    )
+    return {
+        **_voice_entry(target),
+        "status":      "ok",
+        "replaced":    bool(existing),
+        "size_kb":     len(content) // 1024,
+        "duration_s":  round(info.duration, 2),
+        "sample_rate": info.samplerate,
+    }
+
+
+@app.delete(
+    "/voices/{name}",
+    summary="Delete a voice sample",
+    tags=["TTS"],
+    responses={404: {"description": "No voice with this name"}},
+)
+async def delete_voice(name: str):
+    """Remove a voice sample (and its `<name>.json` profile, if any) from `voices/`."""
+    samples = _find_voice_samples(name)
+    if not samples:
+        raise HTTPException(status_code=404, detail=f"Voice '{name}' not found")
+    removed = []
+    for f in samples:
+        f.unlink(missing_ok=True)
+        removed.append(f.name)
+        profile_path = f.with_suffix(".json")
+        if profile_path.exists():
+            profile_path.unlink()
+            removed.append(profile_path.name)
+    logger.info(f"Voice deleted: name='{name}' files={removed}")
+    return {"status": "ok", "name": name, "removed": removed}
 
 
 @app.get("/profile/defaults", summary="TTS default synthesis parameters", tags=["TTS"])

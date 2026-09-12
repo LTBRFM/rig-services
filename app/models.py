@@ -3,11 +3,12 @@ Shared request/response models and Job lifecycle types.
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -66,6 +67,31 @@ class MusicRequest(BaseModel):
                                           description="BPM hint (optional, model auto-detects if omitted)")
     thinking:       Optional[bool] = Field(default=None,
                                            description="Enable LM Chain-of-Thought reasoning — falls back to preset")
+
+
+# ── Voice management ──────────────────────────────────────────────────────────
+
+# Voice names become file stems in voices_dir — keep them path-safe.
+VOICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+class VoiceInfo(BaseModel):
+    name:    str            = Field(description="Voice identifier — pass this as `voice` in POST /tts")
+    file:    str            = Field(description="Sample file name inside voices_dir")
+    format:  str            = Field(description="Audio container (wav, mp3, flac, ogg)")
+    profile: Dict[str, Any] = Field(description="Effective XTTS synthesis parameters (defaults merged with <name>.json)")
+
+
+class VoiceListResponse(BaseModel):
+    voices: List[VoiceInfo]
+
+
+class VoiceUploadResponse(VoiceInfo):
+    status:      str   = Field(default="ok")
+    replaced:    bool  = Field(description="True if an existing sample with this name was overwritten")
+    size_kb:     int   = Field(description="Stored sample size in KB")
+    duration_s:  float = Field(description="Sample length in seconds")
+    sample_rate: int   = Field(description="Sample rate in Hz")
 
 
 # ── Job ───────────────────────────────────────────────────────────────────────

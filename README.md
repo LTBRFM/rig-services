@@ -46,7 +46,15 @@ explanatory message.  TTS is unaffected.
 
 ## Adding Voices
 
-Drop audio files into the `voices/` directory:
+Either upload through the API (no restart needed, works from any machine):
+
+```bash
+curl -X POST http://192.168.50.61:8000/voices \
+  -F "file=@narrator.wav" -F "name=narrator" \
+  -F 'profile={"temperature": 0.65, "speed": 1.0}'     # profile is optional
+```
+
+or drop audio files straight into the `voices/` directory:
 
 ```
 voices/
@@ -114,9 +122,43 @@ curl http://localhost:8000/voices
 ```json
 {
   "voices": [
-    {"name": "alice", "file": "alice.wav", "format": "wav"}
+    {"name": "alice", "file": "alice.wav", "format": "wav", "profile": {"temperature": 0.75, "...": "..."}}
   ]
 }
+```
+
+---
+
+### `POST /voices`
+Upload a speaker sample and register it as a voice (`multipart/form-data`).
+Returns **201** with the new voice entry; the voice is usable in `POST /tts` immediately.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `file` | yes | `.wav`, `.mp3`, `.flac` or `.ogg`, max 50 MB — decoded on upload to make sure it is valid audio |
+| `name` | no | Voice identifier (`[A-Za-z0-9_-]`, max 64 chars). Defaults to the file name without extension |
+| `overwrite` | no | `true` to replace an existing voice; otherwise a duplicate name returns **409** |
+| `profile` | no | JSON object of XTTS overrides, stored as `voices/<name>.json` (see `GET /profile/defaults`) |
+
+```bash
+curl -X POST http://localhost:8000/voices -F "file=@narrator.wav" -F "name=narrator"
+```
+```json
+{
+  "name": "narrator", "file": "narrator.wav", "format": "wav", "profile": {"...": "..."},
+  "status": "ok", "replaced": false, "size_kb": 812, "duration_s": 18.9, "sample_rate": 22050
+}
+```
+
+Replacing a sample automatically invalidates cached TTS outputs for that voice.
+
+---
+
+### `DELETE /voices/{name}`
+Remove a voice sample and its `<name>.json` profile. Returns **404** if the voice does not exist.
+
+```bash
+curl -X DELETE http://localhost:8000/voices/narrator
 ```
 
 ---
