@@ -1,0 +1,9 @@
+{
+  "temperature": 0.75,
+  "top_p": 0.85,
+  "top_k": 50,
+  "repetition_penalty": 10.0,
+  "length_penalty": 1.0,
+  "speed": 1.0,
+  "enable_text_splitting": true
+}

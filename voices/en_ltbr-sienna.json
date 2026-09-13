@@ -1,0 +1,13 @@
+{
+  "gpt_cond_len": 30,
+  "gpt_cond_chunk_len": 6,
+  "max_ref_len": 30,
+  "sound_norm_refs": false,
+  "temperature": 0.7,
+  "top_p": 0.85,
+  "top_k": 50,
+  "repetition_penalty": 10.0,
+  "length_penalty": 1.0,
+  "speed": 1.0,
+  "enable_text_splitting": true
+}
